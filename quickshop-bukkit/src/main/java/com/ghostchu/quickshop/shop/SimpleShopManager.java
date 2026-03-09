@@ -81,6 +81,7 @@ import org.bukkit.potion.PotionEffectType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -831,7 +832,13 @@ public class SimpleShopManager extends AbstractShopManager implements ShopManage
           }
         }
       }
-      final int max = plugin.getRankLimiter().getShopLimit(p);
+      int additional = 0;
+      try {
+        additional = (int) Class.forName("dev.dan.quickshoplimit.QuickShopLimit").getMethod("getAdditionalCount", Player.class).invoke(additional, p.getBukkitPlayer().get());
+      } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InvocationTargetException e){
+        e.printStackTrace();
+      }
+      final int max = plugin.getRankLimiter().getShopLimit(p) + additional;
       final boolean limitReached = owned >= max;
       Log.debug("CanBuildShop check for " + p.getDisplay() + " owned: " + owned + "; max: " + max);
 
