@@ -22,6 +22,7 @@ public class DisplayAutoDespawnWatcher implements Runnable, Reloadable, SubPaste
   private final QuickShop plugin;
   private int range;
   private WrappedTask task;
+  private int taskPeriod;
 
   public DisplayAutoDespawnWatcher(@NotNull final QuickShop plugin) {
 
@@ -51,6 +52,9 @@ public class DisplayAutoDespawnWatcher implements Runnable, Reloadable, SubPaste
 
   public void start(final int delay, final int period) {
 
+    taskPeriod = period;
+    stop();
+
     task = QuickShop.folia().getScheduler().runTimer(this, delay, period);
   }
 
@@ -65,8 +69,8 @@ public class DisplayAutoDespawnWatcher implements Runnable, Reloadable, SubPaste
       if(shop.isDisableDisplay()) {
         continue;
       }
-      final Location location = shop.getLocation();
-      final World world = shop.getLocation().getWorld(); //Cache this, because it will took some time.
+      final Location location = shop.bukkitLocation();
+      final World world = shop.bukkitLocation().getWorld(); //Cache this, because it will took some time.
       final AbstractDisplayItem displayItem = ((ContainerShop)shop).getDisplayItem();
       if(displayItem != null) {
         // Check the range has player?
@@ -97,12 +101,18 @@ public class DisplayAutoDespawnWatcher implements Runnable, Reloadable, SubPaste
       }
     } catch(final IllegalStateException ignore) {
     }
+  }
+
+  public void unregister() {
+
+    stop();
     plugin.getReloadManager().unregister(this);
     plugin.getPasteManager().unregister(plugin.getJavaPlugin(), this);
   }
 
   @Override
-  public @NotNull String genBody() {
+  @NotNull
+  public String genBody() {
 
     final StringJoiner joiner = new StringJoiner("<br/>");
     joiner.add("<b>Warning: DisplayAutoDespawnWatcher has been enabled, this may cause lag. This feature is not recommended</b>");
@@ -111,8 +121,14 @@ public class DisplayAutoDespawnWatcher implements Runnable, Reloadable, SubPaste
   }
 
   @Override
-  public @NotNull String getTitle() {
+  @NotNull
+  public String getTitle() {
 
     return "Display Auto Despawn Watcher";
+  }
+
+  public int getTaskPeriod() {
+
+    return this.taskPeriod;
   }
 }

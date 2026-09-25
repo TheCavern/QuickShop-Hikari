@@ -4,6 +4,7 @@ import com.ghostchu.quickshop.QuickShop;
 import com.ghostchu.quickshop.api.obj.QUser;
 import com.ghostchu.quickshop.api.registry.BuiltInRegistry;
 import com.ghostchu.quickshop.api.registry.builtin.itemexpression.ItemExpressionRegistry;
+import com.ghostchu.quickshop.api.shop.IShopType;
 import com.ghostchu.quickshop.api.shop.PriceLimiter;
 import com.ghostchu.quickshop.api.shop.PriceLimiterCheckResult;
 import com.ghostchu.quickshop.api.shop.PriceLimiterStatus;
@@ -14,7 +15,7 @@ import com.ghostchu.quickshop.util.paste.item.SubPasteItem;
 import com.ghostchu.quickshop.util.paste.util.HTMLTable;
 import com.ghostchu.simplereloadlib.ReloadResult;
 import com.ghostchu.simplereloadlib.Reloadable;
-import lombok.Data;
+import org.bukkit.Material;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -32,7 +33,9 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.StringJoiner;
 import java.util.function.Function;
 import java.util.regex.Pattern;
@@ -43,8 +46,11 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
   private final QuickShop plugin;
   private final Map<String, RuleSet> rules = new LinkedHashMap<>();
   private boolean wholeNumberOnly = false;
-  private double undefinedMin = 0.0d;
-  private double undefinedMax = Double.MAX_VALUE;
+  private double globalSellingMin = -1;
+  private double globalSellingMax = -1;
+  private double globalBuyingMin = -1;
+  private double globalBuyingMax = -1;
+  private RuleScope defaultRuleScope = RuleScope.BUYING_AND_SELLING;
 
   public SimplePriceLimiter(@NotNull final QuickShop plugin) {
 
@@ -74,8 +80,12 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
         plugin.logger().warn("Failed to save migrated  price-restriction.yml.yml to plugin folder!", e);
       }
     }
-    this.undefinedMax = configuration.getDouble("undefined.max", 99999999999999999999999999999.99d);
-    this.undefinedMin = configuration.getDouble("undefined.min", 0.0d);
+    this.globalSellingMax = configuration.getDouble("global.selling.max", -1);
+    this.globalSellingMin = configuration.getDouble("global.selling.min", -1);
+    this.globalBuyingMax = configuration.getDouble("global.buying.max", -1);
+    this.globalBuyingMin = configuration.getDouble("global.buying.min", -1);
+    this.defaultRuleScope = parseScope(configuration.getString("default-rule-scope"), RuleScope.BUYING_AND_SELLING,
+                                       "default-rule-scope");
     this.wholeNumberOnly = configuration.getBoolean("whole-number-only", false);
     if(!configuration.getBoolean("enable", false)) {
       return;
@@ -117,9 +127,22 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
     }
     if(configuration.getInt("version") == 2) {
       if(configuration.getDouble("undefined.max") == -1) {
-        configuration.set("undefined.max", 99999999999999999999999999999.99d); // DECIMAL (32,2) MAX
+        configuration.set("undefined.max", 1.0E29); // DECIMAL (32,2) MAX
       }
       configuration.set("version", 3);
+      anyChanges = true;
+    }
+    if(configuration.getInt("version") == 3) {
+      Log.debug("Migrating price-restriction.yml from version 3 to version 4");
+      final double min = configuration.getDouble("undefined.min", 0.01);
+      final double max = configuration.getDouble("undefined.max", 1.0E29);
+      configuration.set("global.selling.min", min);
+      configuration.set("global.selling.max", max);
+      configuration.set("global.buying.min", min);
+      configuration.set("global.buying.max", max);
+      configuration.set("default-rule-scope", RuleScope.BUYING_AND_SELLING.name());
+      configuration.set("undefined", null);
+      configuration.set("version", 4);
       anyChanges = true;
     }
     return anyChanges;
@@ -132,24 +155,46 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
     if(section == null) {
       return null;
     }
-    final String bypassPermission = "quickshop.price.restriction.bypass." + ruleName;
-    final List<Function<ItemStack, Boolean>> items = new ArrayList<>();
-    final double min = section.getDouble("min", 0d);
+    final double min = section.getDouble("min", 0.0);
     final double max = section.getDouble("max", Double.MAX_VALUE);
+    final RuleScope scope = parseScope(section.getString("scope"), defaultRuleScope, "rule " + ruleName);
+    final String bypassPermission = "quickshop.price.restriction.bypass." + ruleName;
     final ItemExpressionRegistry itemExpressionRegistry = (ItemExpressionRegistry)plugin.getRegistry().getRegistry(BuiltInRegistry.ITEM_EXPRESSION);
-    for(final String item : section.getStringList("items")) {
+    final List<Function<ItemStack, Boolean>> items = new ArrayList<>();
+    final List<String> configuredItems = section.getStringList("items");
+    for(final String item : configuredItems) {
       items.add(itemStack->itemExpressionRegistry.match(itemStack, item));
+    }
+    if(configuredItems.isEmpty()) {
+      final Material material = Material.matchMaterial(ruleName);
+      if(material != null) {
+        items.add(itemStack->itemExpressionRegistry.match(itemStack, material.name()));
+      }
     }
     final List<Pattern> currency = new ArrayList<>();
     for(final String currencyStr1 : section.getStringList("currency")) {
       try {
-        final Pattern pattern = Pattern.compile(currencyStr1);
+        final Pattern pattern = Pattern.compile(currencyStr1.equals("*")? ".*" : currencyStr1);
         currency.add(pattern);
       } catch(final PatternSyntaxException e) {
         plugin.logger().warn("Failed to read rule {}'s a Currency option, invalid pattern {}! Skipping...", ruleName, currencyStr1);
       }
     }
-    return new RuleSet(items, bypassPermission, currency, min, max);
+    return new RuleSet(items, bypassPermission, currency, scope, min, max);
+  }
+
+  private RuleScope parseScope(@Nullable final String configuredScope, @NotNull final RuleScope fallback,
+                               @NotNull final String settingName) {
+
+    if(configuredScope == null) {
+      return fallback;
+    }
+    try {
+      return RuleScope.valueOf(configuredScope.toUpperCase(Locale.ROOT));
+    } catch(final IllegalArgumentException exception) {
+      plugin.logger().warn("{} has an invalid scope. Using {}.", settingName, fallback);
+      return fallback;
+    }
   }
 
   /**
@@ -167,27 +212,43 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
      */
   @Override
   @NotNull
-  public PriceLimiterCheckResult check(@NotNull final CommandSender sender, @NotNull final ItemStack itemStack, @Nullable final String currency, final double price) {
+  public PriceLimiterCheckResult check(@NotNull final CommandSender sender, @NotNull final ItemStack itemStack,
+                                       @Nullable final String currency, final double price) {
+
+    return check(sender, itemStack, currency, price, null);
+  }
+
+  @Override
+  @NotNull
+  public PriceLimiterCheckResult check(@NotNull final CommandSender sender, @NotNull final ItemStack itemStack, @Nullable final String currency,
+                                       final double price, @Nullable final IShopType shopType) {
+
+    final double globalMin = globalMin(shopType);
+    final double globalMax = globalMax(shopType);
 
     if(Double.isInfinite(price) || Double.isNaN(price)) {
-      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.NOT_VALID, undefinedMin, undefinedMax);
+      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.NOT_VALID, globalMin, globalMax);
+    }
+    if(price < 0) {
+      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.REACHED_PRICE_MIN_LIMIT, 0.0d, globalMax);
     }
     if(wholeNumberOnly) {
       try {
         BigDecimal.valueOf(price).setScale(0, RoundingMode.UNNECESSARY);
       } catch(final ArithmeticException exception) {
         Log.debug(exception.getMessage());
-        return new SimplePriceLimiterCheckResult(PriceLimiterStatus.NOT_A_WHOLE_NUMBER, undefinedMin, undefinedMax);
+        return new SimplePriceLimiterCheckResult(PriceLimiterStatus.NOT_A_WHOLE_NUMBER, globalMin, globalMax);
       }
     }
 
     double minPrice = 0;
     double maxPrice = 0;
     boolean hasMaxPrice = false;
+    boolean hasMinPrice = false;
     final List<ItemStack> flattenedItems = ItemContainerUtil.flattenContents(itemStack, true, false);
 
     for(final RuleSet rule : rules.values()) {
-      if(rule.canBypass(sender) || !rule.isApplicableCurrency(currency)) {
+      if(rule.canBypass(sender) || !rule.isApplicableCurrency(currency) || !rule.isApplicableShopType(shopType)) {
         continue;
       }
 
@@ -200,6 +261,7 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
       }
 
       if(rule.hasMinPrice()) {
+        hasMinPrice = true;
         minPrice += rule.getMin() * itemTally;
       }
       if(rule.hasMaxPrice()) {
@@ -208,16 +270,14 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
       }
     }
 
-    if(price < minPrice || (hasMaxPrice && price > maxPrice)) {
-      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PRICE_RESTRICTED, minPrice, maxPrice);
+    if ((hasMinPrice && price < minPrice) || (hasMaxPrice && price > maxPrice)
+        || (globalMin > 0 && price < globalMin) || (globalMax >= 0 && price > globalMax)) {
+
+      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PRICE_RESTRICTED,
+                                               (hasMinPrice)? minPrice : globalMin,
+                                               (hasMaxPrice)? maxPrice : globalMax);
     }
-    if(undefinedMin != -1 && price < undefinedMin) {
-      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PRICE_RESTRICTED, undefinedMin, undefinedMax);
-    }
-    if(undefinedMax != -1 && price > undefinedMax) {
-      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PRICE_RESTRICTED, undefinedMin, undefinedMax);
-    }
-    return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PASS, undefinedMin, undefinedMax);
+    return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PASS, globalMin, globalMax);
   }
 
   /**
@@ -235,27 +295,43 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
      */
   @Override
   @NotNull
-  public PriceLimiterCheckResult check(@NotNull final QUser user, @NotNull final ItemStack itemStack, @Nullable final String currency, final double price) {
+  public PriceLimiterCheckResult check(@NotNull final QUser user, @NotNull final ItemStack itemStack,
+                                       @Nullable final String currency, final double price) {
+
+    return check(user, itemStack, currency, price, null);
+  }
+
+  @Override
+  @NotNull
+  public PriceLimiterCheckResult check(@NotNull final QUser user, @NotNull final ItemStack itemStack, @Nullable final String currency,
+                                       final double price, @Nullable final IShopType shopType) {
+
+    final double globalMin = globalMin(shopType);
+    final double globalMax = globalMax(shopType);
 
     if(Double.isInfinite(price) || Double.isNaN(price)) {
-      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.NOT_VALID, undefinedMin, undefinedMax);
+      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.NOT_VALID, globalMin, globalMax);
+    }
+    if(price < 0) {
+      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.REACHED_PRICE_MIN_LIMIT, 0.0d, globalMax);
     }
     if(wholeNumberOnly) {
       try {
         BigDecimal.valueOf(price).setScale(0, RoundingMode.UNNECESSARY);
       } catch(final ArithmeticException exception) {
         Log.debug(exception.getMessage());
-        return new SimplePriceLimiterCheckResult(PriceLimiterStatus.NOT_A_WHOLE_NUMBER, undefinedMin, undefinedMax);
+        return new SimplePriceLimiterCheckResult(PriceLimiterStatus.NOT_A_WHOLE_NUMBER, globalMin, globalMax);
       }
     }
 
     double minPrice = 0;
     double maxPrice = 0;
     boolean hasMaxPrice = false;
+    boolean hasMinPrice = false;
     final List<ItemStack> flattenedItems = ItemContainerUtil.flattenContents(itemStack, true, false);
 
     for(final RuleSet rule : rules.values()) {
-      if(rule.canBypass(user) || !rule.isApplicableCurrency(currency)) {
+      if(rule.canBypass(user) || !rule.isApplicableCurrency(currency) || !rule.isApplicableShopType(shopType)) {
         continue;
       }
 
@@ -268,6 +344,7 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
       }
 
       if(rule.hasMinPrice()) {
+        hasMinPrice = true;
         minPrice += rule.getMin() * itemTally;
       }
       if(rule.hasMaxPrice()) {
@@ -276,16 +353,24 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
       }
     }
 
-    if(price < minPrice || (hasMaxPrice && price > maxPrice)) {
-      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PRICE_RESTRICTED, minPrice, maxPrice);
+    if ((hasMinPrice && price < minPrice) || (hasMaxPrice && price > maxPrice)
+        || (globalMin > 0 && price < globalMin) || (globalMax >= 0 && price > globalMax)) {
+
+      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PRICE_RESTRICTED,
+                                               (hasMinPrice)? minPrice : globalMin,
+                                               (hasMaxPrice)? maxPrice : globalMax);
     }
-    if(undefinedMin != -1 && price < undefinedMin) {
-      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PRICE_RESTRICTED, undefinedMin, undefinedMax);
-    }
-    if(undefinedMax != -1 && price > undefinedMax) {
-      return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PRICE_RESTRICTED, undefinedMin, undefinedMax);
-    }
-    return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PASS, undefinedMin, undefinedMax);
+    return new SimplePriceLimiterCheckResult(PriceLimiterStatus.PASS, globalMin, globalMax);
+  }
+
+  private double globalMin(@Nullable final IShopType shopType) {
+
+    return shopType != null && shopType.isBuying()? globalBuyingMin : globalSellingMin;
+  }
+
+  private double globalMax(@Nullable final IShopType shopType) {
+
+    return shopType != null && shopType.isBuying()? globalBuyingMax : globalSellingMax;
   }
 
   @Override
@@ -296,13 +381,14 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
   }
 
   @Override
-  public @NotNull String genBody() {
+  @NotNull
+  public String genBody() {
 
     final StringJoiner joiner = new StringJoiner("<br/>");
     joiner.add("<h5>Metadata</h5>");
     final HTMLTable meta = new HTMLTable(2, true);
-    meta.insert("Undefined Minimum", undefinedMin);
-    meta.insert("Undefined Maximum", undefinedMax);
+    meta.insert("Buying Range", globalBuyingMin + " - " + globalBuyingMax);
+    meta.insert("Selling Range", globalSellingMin + " - " + globalSellingMax);
     meta.insert("Only WholeNumber", wholeNumberOnly);
     meta.insert("Rules", rules.size());
     joiner.add(meta.render());
@@ -322,25 +408,28 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
   }
 
   @Override
-  public @NotNull String getTitle() {
+  @NotNull
+  public String getTitle() {
 
     return "Price Limiter";
   }
 
-  @Data
   static class RuleSet {
 
     private final List<Function<ItemStack, Boolean>> items;
     private final String bypassPermission;
     private final List<Pattern> currency;
+    private final RuleScope scope;
     private final double min;
     private final double max;
 
-    public RuleSet(final List<Function<ItemStack, Boolean>> items, final String bypassPermission, final List<Pattern> currency, final double min, final double max) {
+    public RuleSet(final List<Function<ItemStack, Boolean>> items, final String bypassPermission, final List<Pattern> currency,
+                   final RuleScope scope, final double min, final double max) {
 
       this.items = items;
       this.bypassPermission = bypassPermission;
       this.currency = currency;
+      this.scope = scope;
       this.min = min;
       this.max = max;
     }
@@ -422,18 +511,26 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
     }
 
     /**
-     * Checks if the currency applies to this rule. Will return true if the currency is null
+     * Checks if the currency applies to this rule. A null currency or an empty configured
+     * currency list applies to every currency.
      *
      * @param currency the currency to check
      *
-     * @return true if the currency either applies, or is null. false otherwise.
+     * @return true if the currency applies or no currency filter is configured, false otherwise.
      */
     public boolean isApplicableCurrency(@Nullable final String currency) {
 
-      if(currency != null) {
+      if(currency != null && !this.currency.isEmpty()) {
         return this.currency.stream().anyMatch(pattern->pattern.matcher(currency).matches());
       }
       return true;
+    }
+
+    public boolean isApplicableShopType(@Nullable final IShopType shopType) {
+
+      return shopType == null || scope == RuleScope.BUYING_AND_SELLING
+             || scope == RuleScope.BUYING && shopType.isBuying()
+             || scope == RuleScope.SELLING && !shopType.isBuying();
     }
 
     /**
@@ -487,5 +584,61 @@ public class SimplePriceLimiter implements Reloadable, PriceLimiter, SubPasteIte
       return false;
     }
 
+    public List<Function<ItemStack, Boolean>> getItems() {
+
+      return this.items;
+    }
+
+    public String getBypassPermission() {
+
+      return this.bypassPermission;
+    }
+
+    public List<Pattern> getCurrency() {
+
+      return this.currency;
+    }
+
+    public double getMin() {
+
+      return this.min;
+    }
+
+    public double getMax() {
+
+      return this.max;
+    }
+
+    @Override
+    public boolean equals(final Object o) {
+
+      if(o == this) return true;
+      if(!(o instanceof SimplePriceLimiter.RuleSet)) return false;
+      final SimplePriceLimiter.RuleSet other = (SimplePriceLimiter.RuleSet)o;
+      return Double.compare(this.getMin(), other.getMin()) == 0
+             && Double.compare(this.getMax(), other.getMax()) == 0
+             && Objects.equals(this.getItems(), other.getItems())
+             && Objects.equals(this.getBypassPermission(), other.getBypassPermission())
+             && Objects.equals(this.getCurrency(), other.getCurrency())
+             && this.scope == other.scope;
+    }
+
+    @Override
+    public int hashCode() {
+
+      return Objects.hash(this.getMin(), this.getMax(), this.getItems(), this.getBypassPermission(), this.getCurrency(), this.scope);
+    }
+
+    @Override
+    public String toString() {
+
+      return "SimplePriceLimiter.RuleSet(items=" + this.getItems() + ", bypassPermission=" + this.getBypassPermission() + ", currency=" + this.getCurrency() + ", scope=" + this.scope + ", min=" + this.getMin() + ", max=" + this.getMax() + ")";
+    }
+  }
+
+  private enum RuleScope {
+    BUYING,
+    SELLING,
+    BUYING_AND_SELLING
   }
 }

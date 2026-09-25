@@ -1,4 +1,5 @@
 package com.ghostchu.quickshop.shop.display.virtual.packet.protocollib;
+
 /*
  * QuickShop-Hikari
  * Copyright (C) 2025 Daniel "creatorfromhell" Vidmar
@@ -29,13 +30,13 @@ import com.comphenix.protocol.wrappers.WrappedChatComponent;
 import com.comphenix.protocol.wrappers.WrappedDataValue;
 import com.comphenix.protocol.wrappers.WrappedDataWatcher;
 import com.ghostchu.quickshop.QuickShop;
+import com.ghostchu.quickshop.api.shop.Shop;
 import com.ghostchu.quickshop.api.shop.display.PacketFactory;
 import com.ghostchu.quickshop.shop.SimpleShopChunk;
 import com.ghostchu.quickshop.shop.display.virtual.VirtualDisplayItem;
 import com.ghostchu.quickshop.shop.display.virtual.VirtualDisplayItemManager;
 import com.ghostchu.quickshop.shop.display.virtual.packet.ProtocolLibHandler;
 import com.ghostchu.quickshop.util.Util;
-import lombok.Getter;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.entity.EntityType;
@@ -43,7 +44,9 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
 import org.jetbrains.annotations.NotNull;
+import org.joml.Vector3f;
 
+import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -52,7 +55,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * PacketFactoryv1_21
+ * PacketFactoryv1_21_10
  *
  * @author creatorfromhell
  * @since 6.2.0.9
@@ -61,10 +64,8 @@ public class PacketFactoryv1_21_10 implements PacketFactory<PacketContainer> {
 
   private static final WrappedDataWatcher.Serializer serializer = WrappedDataWatcher.Registry.getItemStackSerializer(false);
 
-  @Getter
   private PacketAdapter chunkSendingPacketAdapter;
 
-  @Getter
   private PacketAdapter chunkUnloadingPacketAdapter;
 
 
@@ -82,26 +83,23 @@ public class PacketFactoryv1_21_10 implements PacketFactory<PacketContainer> {
     final UUID identifier = UUID.nameUUIDFromBytes(("SHOP:" + id).getBytes(StandardCharsets.UTF_8));
 
     //First, create a new packet to spawn item
-    final PacketContainer fakeItemPacket = ProtocolLibHandler.instance().internal().createPacket(PacketType.Play.Server.SPAWN_ENTITY);
+    final PacketContainer fakeItemPacket = new PacketContainer(PacketType.Play.Server.SPAWN_ENTITY);
 
     //id and velocity
     fakeItemPacket.getIntegers().write(0, id);
-    fakeItemPacket.getVectors().write(0, new Vector(0, 0, 0));
-
-    //Entity Type
-    fakeItemPacket.getEntityTypeModifier().write(0, EntityType.ITEM);
 
     //UUID
     fakeItemPacket.getUUIDs().write(0, identifier);
 
+    //Entity Type
+    fakeItemPacket.getEntityTypeModifier().write(0, EntityType.ITEM);
+
     //Location
-    fakeItemPacket.getDoubles()
-            //X
-            .write(0, displayLocation.getX())
-            //Y
-            .write(1, displayLocation.getY())
-            //Z
-            .write(2, displayLocation.getZ());
+
+    fakeItemPacket.getDoubles().write(0, displayLocation.getX());
+    fakeItemPacket.getDoubles().write(1, displayLocation.getY());
+    fakeItemPacket.getDoubles().write(2, displayLocation.getZ());
+    fakeItemPacket.getVectors().write(0, new Vector(0, 0, 0));
     return fakeItemPacket;
   }
 
@@ -119,15 +117,15 @@ public class PacketFactoryv1_21_10 implements PacketFactory<PacketContainer> {
     final List<WrappedDataValue> values = new ArrayList<>();
 
     //gravity disabled
-    values.add(new WrappedDataValue(5, WrappedDataWatcher.Registry.get(Boolean.class), true));
+    values.add(new WrappedDataValue(5, WrappedDataWatcher.Registry.get((Type)Boolean.class), true));
     values.add(new WrappedDataValue(8, serializer, MinecraftReflection.getMinecraftItemStack(itemStack)));
 
-    if(QuickShop.getInstance().getVirtualDisplayItemManager().useItemName()) {
+    if(QuickShop.getInstance().getDisplayManager().useItemName()) {
 
       final String itemName = GsonComponentSerializer.gson().serialize(Util.getItemStackName(itemStack));
 
       values.add(new WrappedDataValue(2, WrappedDataWatcher.Registry.getChatComponentSerializer(true), Optional.of(WrappedChatComponent.fromJson(itemName).getHandle())));
-      values.add(new WrappedDataValue(3, WrappedDataWatcher.Registry.get(Boolean.class), true));
+      values.add(new WrappedDataValue(3, WrappedDataWatcher.Registry.get((Type)Boolean.class), true));
     }
 
     //Next, create a new packet to update item data (default is empty)
@@ -145,6 +143,68 @@ public class PacketFactoryv1_21_10 implements PacketFactory<PacketContainer> {
       throw new RuntimeException("Unable to initialize packet, ProtocolLib update needed", e);
     }
     return fakeItemMetaPacket;
+  }
+
+  /**
+   * Creates a text display spawn packet for the specified entity ID and location.
+   *
+   * @param id       the unique identifier for the entity associated with the text display spawn
+   *                 packet
+   * @param location the location where the text display will be spawned, cannot be null
+   *
+   * @return the text display spawn packet of type T
+   */
+  @Override
+  public PacketContainer createTextDisplaySpawnPacket(final int id, @NotNull final Location location) {
+
+    final UUID identifier = UUID.nameUUIDFromBytes(("SHOP_TEXT:" + id).getBytes(StandardCharsets.UTF_8));
+
+    final PacketContainer packet = new PacketContainer(PacketType.Play.Server.SPAWN_ENTITY);
+
+    packet.getIntegers().write(0, id);
+    packet.getUUIDs().write(0, identifier);
+    packet.getEntityTypeModifier().write(0, EntityType.TEXT_DISPLAY);
+
+    packet.getDoubles().write(0, location.getX());
+    packet.getDoubles().write(1, location.getY());
+    packet.getDoubles().write(2, location.getZ());
+    return packet;
+  }
+
+  /**
+   * Creates a name visibility packet for the given entity ID, item stack, and visibility state.
+   *
+   * @param id        the ID of the entity associated with the packet
+   * @param itemStack the ItemStack to include in the packet, cannot be null
+   *
+   * @return the name visibility packet of type T
+   */
+  @Override
+  public PacketContainer createTextDisplayVisiblePacket(final int id, @NotNull final Shop shop, @NotNull final ItemStack itemStack) {
+
+    final PacketContainer packet = new PacketContainer(PacketType.Play.Server.ENTITY_METADATA);
+    packet.getIntegers().write(0, id);
+
+    final int blockDistance = QuickShop.getInstance().getConfig().getInt("shop.text-display.range-blocks", 8);
+    final Vector3f scaleVector = new Vector3f(QuickShop.getInstance().getConfig().getFloat("shop.text-display.scale.x", 1.0F), QuickShop.getInstance().getConfig().getFloat("shop.text-display.scale.y", 1.0F), QuickShop.getInstance().getConfig().getFloat("shop.text-display.scale.z", 1.0F));
+    final WrappedChatComponent component = WrappedChatComponent.fromJson(GsonComponentSerializer.gson().serialize(Util.getTextDisplay(shop, itemStack)));
+
+    final List<WrappedDataValue> data = new ArrayList<>();
+    //data.add(new WrappedDataValue(12, WrappedDataWatcher.Registry.get(Vector3f.class), scaleVector));
+    data.add(new WrappedDataValue(15, WrappedDataWatcher.Registry.get((Type)Byte.class), (byte)3));
+    data.add(new WrappedDataValue(17, WrappedDataWatcher.Registry.get((Type)Float.class), blockDistance * 0.0125f));
+    data.add(new WrappedDataValue(23, WrappedDataWatcher.Registry.getChatComponentSerializer(), component.getHandle()));
+    data.add(new WrappedDataValue(24, WrappedDataWatcher.Registry.get((Type)Integer.class),
+                                  QuickShop.getInstance().getConfig().getInt("shop.text-display.line-width", 200)));
+    data.add(new WrappedDataValue(25, WrappedDataWatcher.Registry.get((Type)Integer.class),
+                                  QuickShop.getInstance().getConfig().getInt("shop.text-display.background-color", 1073741824)));
+    data.add(new WrappedDataValue(26, WrappedDataWatcher.Registry.get((Type)Byte.class),
+                                  QuickShop.getInstance().getConfig().getByte("shop.text-display.text-opacity", (byte)-1)));
+    data.add(new WrappedDataValue(27, WrappedDataWatcher.Registry.get((Type)Byte.class), Util.createTextDisplayFlags()));
+
+    packet.getDataValueCollectionModifier().write(0, data);
+
+    return packet;
   }
 
   /**
@@ -213,14 +273,13 @@ public class PacketFactoryv1_21_10 implements PacketFactory<PacketContainer> {
         if(player.getClass().getName().contains("TemporaryPlayer")) {
           return;
         }
-        final StructureModifier<Integer> integerStructureModifier = event.getPacket().getIntegers();
-        //chunk x
-        final int x = integerStructureModifier.read(0);
-        //chunk z
-        final int z = integerStructureModifier.read(1);
 
-        VirtualDisplayItemManager.instance().getChunksMapping().computeIfPresent(new SimpleShopChunk(player.getWorld().getName(), x, z), (chunkLoc, targetList)->{
-          for(final VirtualDisplayItem<?> target : targetList) {
+
+        final StructureModifier<ChunkCoordIntPair> chunkCoord = event.getPacket().getChunkCoordIntPairs();
+        final ChunkCoordIntPair pair = chunkCoord.read(0);
+
+        VirtualDisplayItemManager.instance().chunksMapping().computeIfPresent(new SimpleShopChunk(player.getWorld().getName(), pair.getChunkX(), pair.getChunkZ()), (chunkLoc, targetList)->{
+          for(final VirtualDisplayItem<?> target : targetList.values()) {
             if(!target.isSpawned()) {
               continue;
             }
@@ -273,8 +332,8 @@ public class PacketFactoryv1_21_10 implements PacketFactory<PacketContainer> {
         final int x = pair.getChunkX();
         //chunk z
         final int z = pair.getChunkZ();
-        VirtualDisplayItemManager.instance().getChunksMapping().computeIfPresent(new SimpleShopChunk(player.getWorld().getName(), x, z), (chunkLoc, targetList)->{
-          for(final VirtualDisplayItem<?> target : targetList) {
+        VirtualDisplayItemManager.instance().chunksMapping().computeIfPresent(new SimpleShopChunk(player.getWorld().getName(), x, z), (chunkLoc, targetList)->{
+          for(final VirtualDisplayItem<?> target : targetList.values()) {
 
             if(!target.isSpawned()) {
 
@@ -301,5 +360,14 @@ public class PacketFactoryv1_21_10 implements PacketFactory<PacketContainer> {
 
       ProtocolLibHandler.instance().internal().removePacketListener(chunkUnloadingPacketAdapter);
     }
+  }
+
+  public PacketAdapter getChunkSendingPacketAdapter() {
+
+    return this.chunkSendingPacketAdapter;
+  }
+  public PacketAdapter getChunkUnloadingPacketAdapter() {
+
+    return this.chunkUnloadingPacketAdapter;
   }
 }

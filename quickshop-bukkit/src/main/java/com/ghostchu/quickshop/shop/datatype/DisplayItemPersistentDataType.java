@@ -1,9 +1,6 @@
 package com.ghostchu.quickshop.shop.datatype;
 
 import com.ghostchu.quickshop.common.util.JsonUtil;
-import com.ghostchu.quickshop.util.Util;
-import org.bukkit.Material;
-import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataAdapterContext;
 import org.bukkit.persistence.PersistentDataType;
 import org.jetbrains.annotations.NotNull;
@@ -32,7 +29,7 @@ public class DisplayItemPersistentDataType
 
     try {
       return JsonUtil.getGson().toJson(complex);
-    } catch(Exception th) {
+    } catch(final Exception th) {
       new RuntimeException("Cannot to toPrimitive the shop protection flag.").printStackTrace();
       return "";
     }
@@ -45,9 +42,9 @@ public class DisplayItemPersistentDataType
 
     try {
       return JsonUtil.getGson().fromJson(primitive, ShopProtectionFlag.class);
-    } catch(Exception th) {
+    } catch(final Exception th) {
       new RuntimeException("Cannot to fromPrimitive the shop protection flag.").printStackTrace();
-      return new ShopProtectionFlag("", Util.serialize(new ItemStack(Material.STONE)));
+      return new ShopProtectionFlag("", "Stone");
     }
   }
 

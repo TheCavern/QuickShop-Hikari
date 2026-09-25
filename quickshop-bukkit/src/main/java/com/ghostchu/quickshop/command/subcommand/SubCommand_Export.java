@@ -3,8 +3,6 @@ package com.ghostchu.quickshop.command.subcommand;
 import com.ghostchu.quickshop.QuickShop;
 import com.ghostchu.quickshop.api.command.CommandHandler;
 import com.ghostchu.quickshop.api.command.CommandParser;
-import com.ghostchu.quickshop.database.DatabaseIOUtil;
-import com.ghostchu.quickshop.database.SimpleDatabaseHelperV2;
 import com.ghostchu.quickshop.database.TableZipCsvBackup;
 import com.ghostchu.quickshop.util.Util;
 import org.bukkit.command.ConsoleCommandSender;
@@ -29,7 +27,6 @@ public class SubCommand_Export implements CommandHandler<ConsoleCommandSender> {
     plugin.text().of(sender, "exporting-database").send();
     final File file = new File(QuickShop.getInstance().getDataFolder(), "export-" + System.currentTimeMillis() + ".zip");
 
-    final DatabaseIOUtil databaseIOUtil = new DatabaseIOUtil((SimpleDatabaseHelperV2)plugin.getDatabaseHelper());
     Util.asyncThreadRun(()->{
       try {
         TableZipCsvBackup.exportTables(file);

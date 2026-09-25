@@ -19,6 +19,7 @@ package com.ghostchu.quickshop.util.matcher.item;
  */
 
 import com.ghostchu.quickshop.QuickShop;
+import com.ghostchu.quickshop.api.event.general.ShopItemMatchEvent;
 import com.ghostchu.quickshop.api.shop.ItemMatcher;
 import com.ghostchu.simplereloadlib.ReloadResult;
 import com.ghostchu.simplereloadlib.ReloadStatus;
@@ -124,6 +125,17 @@ public class ModernCustomMatcher implements ItemMatcher, Reloadable {
 
     if(original == null || tester == null) {
       return false;
+    }
+
+    if(original.isSimilar(tester)) {
+      return true;
+    }
+
+    final ShopItemMatchEvent shopItemMatchEvent = new ShopItemMatchEvent(original.clone(), tester.clone());
+    shopItemMatchEvent.callEvent();
+
+    if(shopItemMatchEvent.matches()) {
+      return true;
     }
 
     //System.out.println("ModernCustomMatcher.matches: checking material");
@@ -244,9 +256,14 @@ public class ModernCustomMatcher implements ItemMatcher, Reloadable {
                                   "DYED_COLOR"
                                  );
 
-      // Fish bucket entity data
+      // Fish bucket entity data, and various fish variants
       case "fish_bucket" -> add(out, registry,
-                                "BUCKET_ENTITY_DATA"
+                                "BUCKET_ENTITY_DATA",
+                                "AXOLOTL/VARIANT",
+                                "SALMON/SIZE",
+                                "TROPICAL_FISH/PATTERN",
+                                "TROPICAL_FISH/BASE_COLOR",
+                                "TROPICAL_FISH/BASE_COLOR"
                                );
 
       // Suspicious stew effects
@@ -303,6 +320,7 @@ public class ModernCustomMatcher implements ItemMatcher, Reloadable {
     try {
       //System.out.println("ModernCustomMatcher.resolveTypeKeyFromDataComponentTypeKeys: " + name);
       final DataComponentType.Valued dataType = (DataComponentType.Valued)Registry.DATA_COMPONENT_TYPE.get(NamespacedKey.minecraft(name.toLowerCase(Locale.ROOT)));
+
       return dataType;
     } catch(final ClassCastException ex) {
       //System.out.println("ModernCustomMatcher.resolveTypeKeyFromDataComponentTypeKeys: " + name + " is not a valued type!");

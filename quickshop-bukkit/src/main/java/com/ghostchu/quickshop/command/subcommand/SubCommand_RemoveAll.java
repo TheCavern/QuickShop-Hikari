@@ -51,16 +51,10 @@ public class SubCommand_RemoveAll implements CommandHandler<CommandSender> {
                   return;
                 }
               }
-              final List<Shop> pendingRemoval = new ArrayList<>();
-              for(final Shop shop : plugin.getShopManager().getAllShops()) {
-                if(!shop.getOwner().equals(qUser)) {
-                  continue;
-                }
-                pendingRemoval.add(shop);
-              }
+              final List<Shop> pendingRemoval = plugin.getShopManager().getAllShops(qUser);
               pendingRemoval.forEach(shop->{
                 plugin.logEvent(new ShopRemoveLog(qUser, "Deleting shop " + shop + " as requested by the /quickshop removeall command.", shop.saveToInfoStorage()));
-                Util.regionThread(shop.getLocation(), () -> plugin.getShopManager().deleteShop(shop));
+                Util.regionThread(shop.bukkitLocation(), () -> plugin.getShopManager().deleteShop(shop));
               });
               plugin.text().of(sender, "command.some-shops-removed", pendingRemoval.size()).send();
             })
@@ -74,6 +68,6 @@ public class SubCommand_RemoveAll implements CommandHandler<CommandSender> {
   @Override
   public @Nullable List<String> onTabComplete(@NotNull final CommandSender sender, @NotNull final String commandLabel, @NotNull final CommandParser parser) {
 
-    return parser.getArgs().size() <= 1? getPlayerList() : Collections.emptyList();
+    return parser.getArgs().size() <= 1? getPlayerList(sender) : Collections.emptyList();
   }
 }

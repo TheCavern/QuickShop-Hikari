@@ -7,7 +7,9 @@ import com.ghostchu.quickshop.compatibility.matcherplus.matchers.impl.AdvancedIt
 import com.ghostchu.quickshop.compatibility.matcherplus.matchers.impl.BreweryXCheck;
 import com.ghostchu.quickshop.compatibility.matcherplus.matchers.impl.CrazyCratesCheck;
 import com.ghostchu.quickshop.compatibility.matcherplus.matchers.impl.ExcellentCratesCheck;
+import com.ghostchu.quickshop.compatibility.matcherplus.matchers.impl.NexoCheck;
 import com.ghostchu.quickshop.compatibility.matcherplus.matchers.impl.PyroFishingCheck;
+import com.ghostchu.quickshop.compatibility.matcherplus.matchers.impl.SafariNetCheck;
 import com.ghostchu.quickshop.compatibility.matcherplus.matchers.impl.SilkSpawnerCheck;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
@@ -44,6 +46,14 @@ public final class Main extends CompatibilityModule implements Listener {
     if(Bukkit.getPluginManager().isPluginEnabled("ExcellentCrates")) {
 
       checks.put("excellentcrates", new ExcellentCratesCheck());
+    }
+
+    if(Bukkit.getPluginManager().isPluginEnabled("Nexo")) {
+      checks.put("nexo", new NexoCheck());
+    }
+
+    if(Bukkit.getPluginManager().isPluginEnabled("SafariNet")) {
+      checks.put("safarinet", new SafariNetCheck());
     }
   }
 

@@ -21,7 +21,6 @@ import com.ghostchu.quickshop.common.util.QuickExecutor;
 import com.ghostchu.quickshop.database.bean.SimpleDataRecord;
 import com.ghostchu.quickshop.shop.ContainerShop;
 import com.ghostchu.quickshop.shop.cache.SimpleShopInventoryCountCache;
-import com.ghostchu.quickshop.util.PackageUtil;
 import com.ghostchu.quickshop.util.logger.Log;
 import com.ghostchu.quickshop.util.performance.PerfMonitor;
 import org.apache.commons.lang3.tuple.Triple;
@@ -37,6 +36,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -58,7 +60,7 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   @NotNull
   private final String prefix;
 
-  private final int LATEST_DATABASE_VERSION = 19;
+  private final int LATEST_DATABASE_VERSION = 21;
 
   public SimpleDatabaseHelperV2(@NotNull final QuickShop plugin, @NotNull final SQLManager manager, @NotNull final String prefix) throws Exception {
 
@@ -87,7 +89,7 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
     final boolean metadataExists = DataTables.METADATA.isExists(manager, prefix);
     DataTables.initializeTables(manager, prefix);
     if(!metadataExists) {
-      setDatabaseVersion(LATEST_DATABASE_VERSION);
+      setDatabaseVersion(LATEST_DATABASE_VERSION).join();
     }
   }
 
@@ -212,6 +214,33 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
     return manager;
   }
 
+  private void addStateColumn() {
+
+    fastBackup();
+    try {
+      Log.debug("Adding state column to " + DataTables.DATA.getName());
+      getManager().alterTable(DataTables.DATA.getName())
+              .addColumn("shop_state", "VARCHAR(64)")
+              .execute();
+
+      Log.debug("Converting old frozen type shops to new frozen state.");
+      getManager().createUpdate(DataTables.SHOPS.getName())
+              .setColumnValues("shop_state", "frozen")
+              .addCondition("type", 2)
+              .build().execute();
+
+      Log.debug("Converting old frozen type shops to buy type.");
+      getManager().createUpdate(DataTables.SHOPS.getName())
+              .setColumnValues("type", 1)
+              .addCondition("type", 2)
+              .build().execute();
+
+    } catch(final SQLException e) {
+
+      Log.debug("Failed to add state " + DataTables.DATA.getName() + "! Err:" + e.getMessage());
+    }
+  }
+
   private void addEncodedColumn() {
 
     fastBackup();
@@ -313,9 +342,11 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   public @NotNull CompletableFuture<@NotNull Long> createData(@NotNull final Shop shop) {
 
     final SimpleDataRecord simpleDataRecord = ((ContainerShop)shop).createDataRecord();
+
     return queryDataId(simpleDataRecord).thenCompose(id->{
       if(id == null) {
         final Map<String, Object> map = simpleDataRecord.generateParams();
+        map.put("create_time", LocalDateTime.ofInstant(simpleDataRecord.getCreateTime().toInstant(), ZoneId.systemDefault()));
         return DataTables.DATA.createInsert()
                 .setColumnNames(new ArrayList<>(map.keySet()))
                 .setParams(map.values())
@@ -445,23 +476,29 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   public @NotNull CompletableFuture<@NotNull Integer> insertHistoryRecord(@NotNull final Object rec) {
 
     return DataTables.LOG_OTHERS.createInsert()
-            .setColumnNames("type", "data")
-            .setParams(rec.getClass().getName(), JsonUtil.getGson().toJson(rec))
+            .setColumnNames("time", "type", "data")
+            .setParams(LocalDateTime.now(ZoneId.systemDefault()), rec.getClass().getName(), JsonUtil.getGson().toJson(rec))
             .executeFuture(lines->lines);
   }
 
   @Override
   public @NotNull CompletableFuture<@NotNull Integer> insertMetricRecord(@NotNull final ShopMetricRecord metricRecord) {
 
+    if(!plugin.getConfig().getBoolean("transaction-metric.enable", true)) {
+      Log.debug("Transaction metric recording is disabled, skipping the metrics record insert.");
+      return CompletableFuture.completedFuture(0);
+    }
+
     final CompletableFuture<Integer> future = new CompletableFuture<>();
     plugin.getDatabaseHelper().locateShopDataId(metricRecord.getShopId()).whenCompleteAsync((dataId, err)->{
       if(err != null) {
         future.completeExceptionally(err);
+        return;
       }
       DataTables.LOG_PURCHASE
               .createInsert()
               .setColumnNames("time", "shop", "data", "buyer", "type", "amount", "money", "tax")
-              .setParams(new Date(metricRecord.getTime()), metricRecord.getShopId()
+              .setParams(LocalDateTime.ofInstant(Instant.ofEpochMilli(metricRecord.getTime()), ZoneId.systemDefault()), metricRecord.getShopId()
                       , dataId, metricRecord.getPlayer(), metricRecord.getType().name(),
                          metricRecord.getAmount(), metricRecord.getTotal(), metricRecord.getTax())
               .executeFuture(lines->lines).whenComplete((line, err2)->{
@@ -478,6 +515,11 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   @Override
   public void insertTransactionRecord(@Nullable UUID from, @Nullable UUID to, final double amount, @Nullable final String currency, final double taxAmount, @Nullable final UUID taxAccount, @Nullable final String error) {
 
+    if(!plugin.getConfig().getBoolean("transaction-metric.enable", true)) {
+      Log.debug("Transaction metric recording is disabled, skipping the transaction record insert.");
+      return;
+    }
+
     if(from == null) {
       from = CommonUtil.getNilUniqueId();
     }
@@ -485,8 +527,8 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
       to = CommonUtil.getNilUniqueId();
     }
     DataTables.LOG_TRANSACTION.createInsert()
-            .setColumnNames("from", "to", "currency", "amount", "tax_amount", "tax_account", "error")
-            .setParams(from.toString(), to.toString(), currency, amount, taxAmount, taxAccount == null? null : taxAccount.toString(), error)
+            .setColumnNames("time", "from", "to", "currency", "amount", "tax_amount", "tax_account", "error")
+            .setParams(LocalDateTime.now(ZoneId.systemDefault()), from.toString(), to.toString(), currency, amount, taxAmount, taxAccount == null? null : taxAccount.toString(), error)
             .executeAsync(handler->Log.debug("Operation completed, insertTransactionRecord, " + handler + " lines affected"));
   }
 
@@ -500,30 +542,71 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   public @NotNull List<ShopRecord> listShops(@Nullable final String worldFilter, final boolean deleteIfCorrupt) {
 
     final List<ShopRecord> shopRecords = new ArrayList<>();
-    final String SQL = "SELECT * FROM " + DataTables.DATA.getName()
-                       + " INNER JOIN " + DataTables.SHOPS.getName()
-                       + " ON " + DataTables.DATA.getName() + ".id = " + DataTables.SHOPS.getName() + ".data"
-                       + " INNER JOIN " + DataTables.SHOP_MAP.getName()
-                       + " ON " + DataTables.SHOP_MAP.getName() + ".shop = " + DataTables.SHOPS.getName() + ".id";
-    try(final SQLQuery query = manager.createQuery().withPreparedSQL(SQL).execute()) {
+    final StringBuilder sqlBuilder = new StringBuilder("SELECT * FROM ")
+            .append(DataTables.DATA.getName())
+            .append(" INNER JOIN ").append(DataTables.SHOPS.getName())
+            .append(" ON ").append(DataTables.DATA.getName()).append(".id = ").append(DataTables.SHOPS.getName()).append(".data")
+            .append(" INNER JOIN ").append(DataTables.SHOP_MAP.getName())
+            .append(" ON ").append(DataTables.SHOP_MAP.getName()).append(".shop = ").append(DataTables.SHOPS.getName()).append(".id")
+            .append(" LEFT JOIN ").append(DataTables.EXTERNAL_CACHE.getName())
+            .append(" ON ").append(DataTables.EXTERNAL_CACHE.getName()).append(".shop = ").append(DataTables.SHOPS.getName()).append(".id");
+    final List<Object> params = new ArrayList<>();
+    if(worldFilter != null) {
+      sqlBuilder.append(" WHERE ").append(DataTables.SHOP_MAP.getName()).append(".world = ?");
+      params.add(worldFilter);
+    }
+    try(final SQLQuery query = manager.createQuery().withPreparedSQL(sqlBuilder.toString()).setParams(params).execute()) {
       final ResultSet rs = query.getResultSet();
       while(rs.next()) {
         final String world = rs.getString("world");
-        if(worldFilter != null && !worldFilter.equals(world)) {
-          continue;
-        }
         final long shopId = rs.getLong("shop");
         final int x = rs.getInt("x");
         final int y = rs.getInt("y");
         final int z = rs.getInt("z");
         final DataRecord dataRecord = new SimpleDataRecord(plugin.getPlayerFinder(), rs);
         final InfoRecord infoRecord = new ShopInfo(shopId, world, x, y, z);
-        shopRecords.add(new ShopRecord(dataRecord, infoRecord));
+        final int cachedStock = rs.getInt("stock");
+        final int cachedSpace = rs.getInt("space");
+        shopRecords.add(new ShopRecord(dataRecord, infoRecord, cachedStock, cachedSpace));
       }
     } catch(final SQLException e) {
       plugin.logger().error("Failed to list shops", e);
     }
     return shopRecords;
+  }
+
+  @Override
+  public void loadAllTags() {
+    try(final SQLQuery query = DataTables.TAGS.createQuery().build().execute()) {
+
+      final ResultSet set = query.getResultSet();
+      while(set.next()) {
+
+        final String tagger = set.getString("tagger");
+        final long shopID = set.getLong("shop");
+        final String tag = set.getString("tag");
+
+        plugin.tagManager().addTag(shopID, UUID.fromString(tagger), tag, false);
+      }
+
+    } catch(final SQLException e) {
+      plugin.logger().error("Failed to load all tags", e);
+    }
+  }
+
+  @Override
+  public @NotNull List<Long> listShopsByTag(@NotNull final String tag) {
+
+    final List<Long> shopIds = new ArrayList<>();
+    try(final SQLQuery query = DataTables.TAGS.createQuery()
+            .addCondition("tag", tag)
+            .build().execute()) {
+      final ResultSet set = query.getResultSet();
+      shopIds.add(set.getLong("shop"));
+    } catch(final SQLException e) {
+      plugin.logger().error("Failed to list shops by with tag " + tag, e);
+    }
+    return shopIds;
   }
 
   @Override
@@ -558,6 +641,47 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   }
 
   @Override
+  public @NotNull List<String> listTags(@NotNull final UUID tagger, @NotNull final Long shopId) {
+
+    final List<String> tags = new ArrayList<>();
+    try(final SQLQuery query = DataTables.TAGS.createQuery()
+            .addCondition("tagger", tagger.toString())
+            .addCondition("shop", shopId)
+            .build().execute()) {
+      final ResultSet set = query.getResultSet();
+      tags.add(set.getString("tag"));
+    } catch(final SQLException e) {
+      plugin.logger().error("Failed to list tags by " + tagger, e);
+    }
+    return tags;
+  }
+
+  @Override
+  public @NotNull CompletableFuture<@Nullable Integer> tagShop(@NotNull final UUID tagger, @NotNull final Long shopId, @NotNull final String tag) {
+
+    return DataTables.TAGS.createInsert()
+            .setColumnNames("tagger", "shop", "tag")
+            .setParams(tagger.toString(), shopId, tag)
+            .executeFuture(i->i);
+  }
+
+  @Override
+  public CompletableFuture<@Nullable Integer> removeAllShopTags(@NotNull final Long shopId) {
+
+    return DataTables.TAGS.createDelete()
+            .addCondition("shop", shopId)
+            .build().executeFuture(i->i);
+  }
+
+  @Override
+  public CompletableFuture<@Nullable Integer> removeAllTagsBy(@NotNull final UUID tagger) {
+
+    return DataTables.TAGS.createDelete()
+            .addCondition("tagger", tagger.toString())
+            .build().executeFuture(i->i);
+  }
+
+  @Override
   public CompletableFuture<@Nullable Integer> removeShopTag(@NotNull final UUID tagger, @NotNull final Long shopId, @NotNull final String tag) {
 
     return DataTables.TAGS.createDelete()
@@ -567,7 +691,7 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   }
 
   @Override
-  public CompletableFuture<@Nullable Integer> removeShopAllTag(@NotNull final UUID tagger, @NotNull final Long shopId) {
+  public CompletableFuture<@Nullable Integer> removeAllShopTagsBy(@NotNull final UUID tagger, @NotNull final Long shopId) {
 
     return DataTables.TAGS.createDelete()
             .addCondition("tagger", tagger.toString())
@@ -582,15 +706,6 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
             .addCondition("tagger", tagger.toString())
             .addCondition("tag", tag)
             .build().executeFuture(i->i);
-  }
-
-  @Override
-  public @NotNull CompletableFuture<@Nullable Integer> tagShop(@NotNull final UUID tagger, @NotNull final Long shopId, @NotNull final String tag) {
-
-    return DataTables.TAGS.createInsert()
-            .setColumnNames("tagger", "shop", "tag")
-            .setParams(tagger.toString(), shopId, tag)
-            .executeFuture(i->i);
   }
 
   @Override
@@ -673,7 +788,7 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
 
     return DataTables.MESSAGES.createInsert()
             .setColumnNames("receiver", "time", "content")
-            .setParams(player.toString(), new Date(time), message)
+            .setParams(player.toString(), LocalDateTime.ofInstant(Instant.ofEpochMilli(time), ZoneId.systemDefault()), message)
             .executeFuture(lines->lines);
   }
 
@@ -719,18 +834,18 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
               .setColumnNames("uuid", "locale", "cachedName")
               .setParams(uuid.toString(), locale, username)
               .executeFuture(lines->lines);
-    } else {
-      return CompletableFuture.supplyAsync(()->{
-        String cachedLocale = getPlayerLocale(uuid).join();
-        if(cachedLocale == null) {
-          cachedLocale = "en_us";
-        }
-        return DataTables.PLAYERS.createReplace()
-                .setColumnNames("uuid", "locale", "cachedName")
-                .setParams(uuid.toString(), cachedLocale, username)
-                .executeFuture(lines->lines).join();
-      });
     }
+
+    return CompletableFuture.supplyAsync(()->{
+      String cachedLocale = getPlayerLocale(uuid).join();
+      if(cachedLocale == null) {
+        cachedLocale = "en_us";
+      }
+      return DataTables.PLAYERS.createReplace()
+              .setColumnNames("uuid", "locale", "cachedName")
+              .setParams(uuid.toString(), cachedLocale, username)
+              .executeFuture(lines->lines).join();
+    });
   }
 
   @Override
@@ -780,7 +895,7 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   public CompletableFuture<Void> updateShop(@NotNull final Shop shop) {
 
     final SimpleDataRecord simpleDataRecord = ((ContainerShop)shop).createDataRecord();
-    final Location loc = shop.getLocation();
+    final Location loc = shop.bukkitLocation();
     // check if datarecord exists
     final long shopId = shop.getShopId();
     if(shopId < 1) {
@@ -808,7 +923,6 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
   public CompletableFuture<@NotNull ShopInventoryCountCache> queryInventoryCache(final long shopId) {
 
     return CompletableFuture.supplyAsync(()->{
-      ShopInventoryCountCache cache = new SimpleShopInventoryCountCache(-2, -2, false);
       try(final SQLQuery query = DataTables.EXTERNAL_CACHE.createQuery()
               .selectColumns("stock", "space")
               .addCondition("shop", shopId)
@@ -816,12 +930,12 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
               .build().execute()) {
         final ResultSet set = query.getResultSet();
         if(set.next()) {
-          cache = new SimpleShopInventoryCountCache(set.getInt("stock"), set.getInt("space"), true);
+          return new SimpleShopInventoryCountCache(set.getInt("stock"), set.getInt("space"), true);
         }
       } catch(final SQLException exception) {
         plugin.logger().warn("Cannot handle the inventory cache lookup for shop {}", shopId, exception);
       }
-      return cache;
+      return new SimpleShopInventoryCountCache();
     });
   }
 
@@ -958,6 +1072,20 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
     }
   }
 
+  private void performShopTableIndexes() {
+
+    try {
+      getManager().alterTable(DataTables.SHOPS.getName())
+              .addIndex(IndexType.INDEX, "idx_qs_shops_data", "data")
+              .execute();
+      getManager().alterTable(DataTables.SHOP_MAP.getName())
+              .addIndex(IndexType.INDEX, "idx_qs_shop_map_shop", "shop")
+              .execute();
+    } catch(final SQLException e) {
+      plugin.logger().warn("Cannot setup the shop table indexes", e);
+    }
+  }
+
   static class DatabaseUpgrade {
 
     private final SimpleDatabaseHelperV2 parent;
@@ -978,7 +1106,7 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
       int currentDatabaseVersion = parent.getDatabaseVersion();
       if(currentDatabaseVersion == -1) {
 
-        currentDatabaseVersion = 19;
+        currentDatabaseVersion = 20;
       }
 
       logger.info("Database upgrade script running... Current Database Version: " + currentDatabaseVersion);
@@ -1041,6 +1169,18 @@ public class SimpleDatabaseHelperV2 implements DatabaseHelper {
         logger.info("Data upgrading: Creating a new column... encoded for enhanced item storage.");
         parent.addEncodedColumn();
         currentDatabaseVersion = 19;
+      }
+
+      if(currentDatabaseVersion == 16 || currentDatabaseVersion == 17 || currentDatabaseVersion == 18 || currentDatabaseVersion == 19) {
+        logger.info("Data upgrading: Creating a new column... shop_state for the new shop states system.");
+        parent.addStateColumn();
+        currentDatabaseVersion = 20;
+      }
+
+      if(currentDatabaseVersion == 20) {
+        logger.info("Data upgrading: Creating indexes for the shop tables to improve performance...");
+        parent.performShopTableIndexes();
+        currentDatabaseVersion = 21;
       }
 
       parent.setDatabaseVersion(currentDatabaseVersion).join();

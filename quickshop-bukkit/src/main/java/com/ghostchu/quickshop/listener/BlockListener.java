@@ -17,12 +17,15 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.block.BlockState;
+import org.bukkit.block.TileState;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockFormEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
@@ -30,6 +33,8 @@ import org.bukkit.event.player.PlayerSignOpenEvent;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+
+import static com.ghostchu.quickshop.shop.SimpleShopManager.CHEST_SHOP;
 
 /**
  * BlockListener to listening events about block events
@@ -51,6 +56,34 @@ public class BlockListener extends AbstractProtectionListener {
     this.updateSignWhenInventoryMoving = super.getPlugin().getConfig().getBoolean("shop.update-sign-when-inventory-moving", true);
   }
 
+  @EventHandler(ignoreCancelled = true)
+  public void onForm(final BlockFormEvent event) {
+
+    if (!getPlugin().getConfig().getBoolean("protect.oxidation")) {
+      return;
+    }
+
+    final Block block = event.getBlock();
+    final BlockState state = block.getState(false);
+
+    //run pdc check first instead of lookup
+    if (state instanceof final TileState tileState && tileState.getPersistentDataContainer().has(CHEST_SHOP)) {
+
+      event.setCancelled(true);
+      return;
+    }
+
+    if (!Util.canBeShop(block, state)) {
+      return;
+    }
+
+    final Shop shop = getShopPlayer(block.getLocation(), false);
+    if (shop == null) {
+      return;
+    }
+    event.setCancelled(true);
+  }
+
   /*
    * Removes chests when they're destroyed.
    */
@@ -61,13 +94,13 @@ public class BlockListener extends AbstractProtectionListener {
     final Player p = e.getPlayer();
     // If the shop was a chest
     if(Util.canBeShop(b)) {
-      final Shop shop = getShopPlayer(b.getLocation(), false);
+      final Shop shop = getShopPlayer(b.getLocation(), true);
       if(shop == null) {
         return;
       }
       // If they're either survival or the owner, they can break it
       if(p.getGameMode() == GameMode.CREATIVE
-         && (shop.playerAuthorize(p.getUniqueId(), BuiltInShopPermission.DELETE) || plugin.perm().hasPermission(p, "quickshop.other.destory"))) {
+         && (shop.playerAuthorize(p.getUniqueId(), BuiltInShopPermission.DELETE) || plugin.perm().hasPermission(p, "quickshop.other.destroy"))) {
         // Check SuperTool
         if(p.getInventory().getItemInMainHand().getType() == Material.GOLDEN_AXE) {
           if(getPlugin().getConfig().getBoolean("shop.disable-super-tool")) {
@@ -104,7 +137,7 @@ public class BlockListener extends AbstractProtectionListener {
       // (accidents happen)
       if(p.getGameMode() == GameMode.CREATIVE
          && (shop.playerAuthorize(p.getUniqueId(), BuiltInShopPermission.DELETE)
-             || plugin.perm().hasPermission(p, "quickshop.other.destory"))) {
+             || plugin.perm().hasPermission(p, "quickshop.other.destroy"))) {
         // Check SuperTool
         if(p.getInventory().getItemInMainHand().getType() == Material.GOLDEN_AXE) {
           if(getPlugin().getConfig().getBoolean("shop.disable-super-tool")) {

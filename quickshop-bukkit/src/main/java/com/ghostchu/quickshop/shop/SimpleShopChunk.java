@@ -1,14 +1,13 @@
 package com.ghostchu.quickshop.shop;
 
 import com.ghostchu.quickshop.api.shop.ShopChunk;
-import lombok.EqualsAndHashCode;
-import lombok.ToString;
+import it.unimi.dsi.fastutil.HashCommon;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.jetbrains.annotations.NotNull;
 
-@EqualsAndHashCode
-@ToString
+import java.util.Objects;
+
 public class SimpleShopChunk implements ShopChunk {
 
   @NotNull
@@ -32,7 +31,8 @@ public class SimpleShopChunk implements ShopChunk {
   }
 
   @Override
-  public @NotNull String getWorld() {
+  @NotNull
+  public String getWorld() {
 
     return world;
   }
@@ -59,5 +59,27 @@ public class SimpleShopChunk implements ShopChunk {
   public boolean isSame(@NotNull final World world, final int x, final int z) {
 
     return isSame(world.getName(), x, z);
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+
+    if(o == this) return true;
+    if(!(o instanceof SimpleShopChunk other)) return false;
+    return this.getX() == other.getX()
+           && this.getZ() == other.getZ()
+           && Objects.equals(this.getWorld(), other.getWorld());
+  }
+
+  @Override
+  public int hashCode() {
+
+    return Objects.hash(HashCommon.mix(this.getX()), this.getZ(), this.getWorld());
+  }
+
+  @Override
+  public String toString() {
+
+    return "SimpleShopChunk(world=" + this.getWorld() + ", x=" + this.getX() + ", z=" + this.getZ() + ")";
   }
 }

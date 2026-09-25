@@ -10,21 +10,17 @@ import com.ghostchu.quickshop.api.shop.ShopManager;
 import com.ghostchu.quickshop.api.shop.cache.ShopCache;
 import com.ghostchu.quickshop.api.shop.cache.ShopCacheNamespacedKey;
 import com.ghostchu.quickshop.api.shop.cache.ShopInventoryCountCache;
+import com.ghostchu.quickshop.api.shop.trading.TradeService;
 import com.ghostchu.quickshop.common.util.QuickExecutor;
 import com.ghostchu.quickshop.shop.cache.BoxedShop;
 import com.ghostchu.quickshop.shop.cache.SimpleShopCache;
 import com.ghostchu.quickshop.util.Util;
 import com.ghostchu.quickshop.util.economyformatter.EconomyFormatter;
 import com.ghostchu.quickshop.util.logger.Log;
-import com.ghostchu.quickshop.util.performance.PerfMonitor;
 import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.MapMaker;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.Getter;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.bukkit.Chunk;
@@ -48,7 +44,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 // This class is extract from SimpleShopManager because it is too big...
@@ -56,19 +51,12 @@ import java.util.function.Function;
 public abstract class AbstractShopManager implements ShopManager {
 
   protected static final DecimalFormat STANDARD_FORMATTER = new DecimalFormat("#.#########");
-  // the performance impact on busy server
-  protected final Cache<UUID, Shop> shopRuntimeUUIDCaching =
-          CacheBuilder.newBuilder()
-                  .expireAfterAccess(10, TimeUnit.MINUTES)
-                  .maximumSize(50)
-                  .weakValues()
-                  .initialCapacity(50)
-                  .build();
   protected final QuickShop plugin;
+  protected final TradeService tradeService;
   protected final EconomyFormatter formatter;
   protected final Map<String, Map<ShopChunk, Map<Location, Shop>>> shops = Maps.newConcurrentMap();
+  protected final Map<UUID, Shop> allShops = Maps.newConcurrentMap();
   protected final Set<Shop> loadedShops = Sets.newConcurrentHashSet(); // Handle it by collection to reduce
-  @Getter
   protected ShopCache shopCache;
 
 
@@ -77,6 +65,7 @@ public abstract class AbstractShopManager implements ShopManager {
     Util.ensureThread(false);
     this.plugin = plugin;
     this.formatter = new EconomyFormatter(plugin);
+    this.tradeService = new SimpleTradeService(plugin);
   }
 
   public void init() {
@@ -96,14 +85,14 @@ public abstract class AbstractShopManager implements ShopManager {
    */
   protected void addShopToLookupTable(@NotNull final Shop shop) {
 
-    final String world = shop.getLocation().getWorld().getName();
+    final String world = shop.bukkitLocation().getWorld().getName();
     final Map<ShopChunk, Map<Location, Shop>> inWorld = shops.computeIfAbsent(world, k->new MapMaker().initialCapacity(3).makeMap());
     // There's no world storage yet. We need to create that map.
     // Put it in the data universe
     // Calculate the chunks coordinates. These are 1,2,3 for each chunk, NOT
     // location rounded to the nearest 16.
-    final int x = (int)Math.floor((shop.getLocation().getBlockX()) / 16.0);
-    final int z = (int)Math.floor((shop.getLocation().getBlockZ()) / 16.0);
+    final int x = shop.bukkitLocation().getBlockX() >> 4;
+    final int z = shop.bukkitLocation().getBlockZ() >> 4;
     // Get the chunk set from the world info
     final ShopChunk shopChunk = new SimpleShopChunk(world, x, z);
     final Map<Location, Shop> inChunk =
@@ -111,14 +100,9 @@ public abstract class AbstractShopManager implements ShopManager {
     // That chunk data hasn't been created yet - Create it!
     // Put it in the world
     // Put the shop in its location in the chunk list.
-    inChunk.put(shop.getLocation(), shop);
-    shopCache.invalidate(null, shop.getLocation());
-  }
-
-  @Override
-  public void bakeShopRuntimeRandomUniqueIdCache(@NotNull final Shop shop) {
-
-    shopRuntimeUUIDCaching.put(shop.getRuntimeRandomUniqueId(), shop);
+    inChunk.put(shop.bukkitLocation(), shop);
+    shopCache.invalidate(null, shop.bukkitLocation());
+    allShops.put(shop.getRuntimeRandomUniqueId(), shop);
   }
 
   /**
@@ -129,7 +113,8 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return formatted price
    */
   @Override
-  public @NotNull String format(final double d, @NotNull final World world, @Nullable final String currency) {
+  @NotNull
+  public String format(final double d, @NotNull final World world, @Nullable final String currency) {
 
     return formatter.format(d, world, currency);
   }
@@ -142,7 +127,8 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return formatted price
    */
   @Override
-  public @NotNull String format(final double d, @NotNull final Shop shop) {
+  @NotNull
+  public String format(final double d, @NotNull final Shop shop) {
 
     return formatter.format(d, shop);
   }
@@ -184,22 +170,22 @@ public abstract class AbstractShopManager implements ShopManager {
    */
   private void removeShopFromLookupTable(@NotNull final Shop shop) {
 
-    final Location loc = shop.getLocation();
+    final Location loc = shop.bukkitLocation();
     final String world = Objects.requireNonNull(loc.getWorld()).getName();
     final Map<ShopChunk, Map<Location, Shop>> inWorld = this.getShops().get(world);
     if(inWorld == null) {
       return;
     }
-    final int x = (int)Math.floor((loc.getBlockX()) / 16.0);
-    final int z = (int)Math.floor((loc.getBlockZ()) / 16.0);
+    final int x = loc.getBlockX() >> 4;
+    final int z = loc.getBlockZ() >> 4;
     final ShopChunk shopChunk = new SimpleShopChunk(world, x, z);
     final Map<Location, Shop> inChunk = inWorld.get(shopChunk);
     if(inChunk == null) {
       return;
     }
     inChunk.remove(loc);
-    shopCache.invalidate(null, shop.getLocation());
-    shopRuntimeUUIDCaching.invalidate(shop.getRuntimeRandomUniqueId());
+    shopCache.invalidate(null, shop.bukkitLocation());
+    allShops.remove(shop.getRuntimeRandomUniqueId());
   }
 
 
@@ -207,7 +193,7 @@ public abstract class AbstractShopManager implements ShopManager {
 
     plugin.logger().error("Shop create failed, auto fix failed, the changes may won't commit to database.", e2);
     plugin.text().of(owner, "shop-creation-failed").send();
-    Util.regionThread(shop.getLocation(), () -> {
+    Util.regionThread(shop.bukkitLocation(), () -> {
       deleteShop(shop);
       unloadShop(shop);
       unregisterShop(shop, true);
@@ -219,7 +205,7 @@ public abstract class AbstractShopManager implements ShopManager {
   @Override
   public CompletableFuture<@Nullable Integer> clearShopTags(@NotNull final UUID tagger, @NotNull final Shop shop) {
 
-    return plugin.getDatabaseHelper().removeShopAllTag(tagger, shop.getShopId());
+    return plugin.getDatabaseHelper().removeAllShopTagsBy(tagger, shop.getShopId());
   }
 
   @Override
@@ -259,7 +245,7 @@ public abstract class AbstractShopManager implements ShopManager {
 
     removeShopFromLookupTable(shop);
     if(!persist) return CompletableFuture.completedFuture(null);
-    final Location loc = shop.getLocation();
+    final Location loc = shop.bukkitLocation();
     return plugin.getDatabaseHelper().removeShopMap(loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())
             .thenCombine(plugin.getDatabaseHelper().removeShop(shop.getShopId()), (a, b)->null)
             .exceptionally(throwable->{
@@ -268,26 +254,11 @@ public abstract class AbstractShopManager implements ShopManager {
             });
   }
 
-
-  /**
-   * Returns all shops in the memory, include unloaded.
-   *
-   * <p>Make sure you have caching this, because this need a while to get all shops
-   *
-   * @return All shop in the database
-   */
   @Override
-  public @NotNull List<Shop> getAllShops() {
+  @NotNull
+  public List<Shop> getAllShops() {
 
-    try(final PerfMonitor ignored = new PerfMonitor("Getting all shops")) {
-      final List<Shop> shopsCollected = new ArrayList<>();
-      for(final Map<ShopChunk, Map<Location, Shop>> shopMapData : getShops().values()) {
-        for(final Map<Location, Shop> shopData : shopMapData.values()) {
-          shopsCollected.addAll(shopData.values());
-        }
-      }
-      return shopsCollected;
-    }
+    return List.copyOf(this.allShops.values());
   }
 
   /**
@@ -296,7 +267,8 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return All loaded shops.
    */
   @Override
-  public @NotNull Set<Shop> getLoadedShops() {
+  @NotNull
+  public Set<Shop> getLoadedShops() {
 
     return this.loadedShops;
   }
@@ -311,10 +283,11 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return The list have this player's all shops.
    */
   @Override
-  public @NotNull List<Shop> getAllShops(@NotNull final QUser playerUUID) {
+  @NotNull
+  public List<Shop> getAllShops(@NotNull final QUser playerUUID) {
 
     final List<Shop> playerShops = new ArrayList<>(10);
-    for(final Shop shop : getAllShops()) {
+    for(final Shop shop : this.allShops.values()) {
       if(shop.getOwner().equals(playerUUID)) {
         playerShops.add(shop);
       }
@@ -323,10 +296,11 @@ public abstract class AbstractShopManager implements ShopManager {
   }
 
   @Override
-  public @NotNull List<Shop> getAllShops(@NotNull final UUID playerUUID) {
+  @NotNull
+  public List<Shop> getAllShops(@NotNull final UUID playerUUID) {
 
     final List<Shop> playerShops = new ArrayList<>(10);
-    for(final Shop shop : getAllShops()) {
+    for(final Shop shop : this.allShops.values()) {
       final UUID shopUuid = shop.getOwner().getUniqueIdIfRealPlayer().orElse(null);
       if(playerUUID.equals(shopUuid)) {
         playerShops.add(shop);
@@ -344,9 +318,10 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return The shop object
    */
   @Override
-  public @Nullable Shop getShop(final long shopId) {
+  @Nullable
+  public Shop getShop(final long shopId) {
 
-    for(final Shop shop : getAllShops()) {
+    for(final Shop shop : this.allShops.values()) {
       if(shop.getShopId() == shopId) {
         return shop;
       }
@@ -363,7 +338,8 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return The shop at that location
    */
   @Override
-  public @Nullable Shop getShop(@NotNull Location loc, final boolean skipShopableChecking) {
+  @Nullable
+  public Shop getShop(@NotNull Location loc, final boolean skipShopableChecking) {
 
     if(!skipShopableChecking && !Util.isShoppables(loc.getBlock().getType())) {
       return null;
@@ -395,19 +371,8 @@ public abstract class AbstractShopManager implements ShopManager {
   public Shop getShopFromRuntimeRandomUniqueId(
           @NotNull final UUID runtimeRandomUniqueId, final boolean includeInvalid) {
 
-    final Shop shop = shopRuntimeUUIDCaching.getIfPresent(runtimeRandomUniqueId);
-    if(shop == null) {
-      for(final Shop shopWithoutCache : this.getLoadedShops()) {
-        if(shopWithoutCache.getRuntimeRandomUniqueId().equals(runtimeRandomUniqueId)) {
-          return shopWithoutCache;
-        }
-      }
-      return null;
-    }
-    if(includeInvalid) {
-      return shop;
-    }
-    if(shop.isValid()) {
+    final Shop shop = allShops.get(runtimeRandomUniqueId);
+    if(includeInvalid || shop.isValid()) {
       return shop;
     }
     return null;
@@ -457,7 +422,8 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return The shop at that location
    */
   @Override
-  public @Nullable Shop getShopIncludeAttached(@Nullable final Location loc) {
+  @Nullable
+  public Shop getShopIncludeAttached(@Nullable final Location loc) {
 
     if(loc == null) {
       Log.debug("Location is null.");
@@ -472,15 +438,17 @@ public abstract class AbstractShopManager implements ShopManager {
     addShopToLookupTable(shop);
     if(!persist) return CompletableFuture.completedFuture(null);
     return plugin.getDatabaseHelper().createData(shop).thenCompose(plugin.getDatabaseHelper()::createShop)
-            .thenAccept(id->{
+            .thenCompose(id->{
               Log.debug("DEBUG: Setting shop id");
               shop.setShopId(id);
               Log.debug("DEBUG: Creating shop map");
-              plugin.getDatabaseHelper().createShopMap(id, shop.getLocation()).join();
+              return plugin.getDatabaseHelper().createShopMap(id, shop.bukkitLocation());
+            })
+            .thenAccept(v->{
               Log.debug("DEBUG: Creating shop successfully");
               shop.setDirty();
 
-              new ShopCreateEvent(Phase.POST, shop, shop.getOwner(), shop.getLocation()).callEvent();
+              new ShopCreateEvent(Phase.POST, shop, shop.getOwner(), shop.bukkitLocation()).callEvent();
             })
             .exceptionally(err->{
               processCreationFail(shop, shop.getOwner(), err);
@@ -495,7 +463,8 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return a map of World - Chunk - Shop
    */
   @Override
-  public @NotNull Map<String, Map<ShopChunk, Map<Location, Shop>>> getShops() {
+  @NotNull
+  public Map<String, Map<ShopChunk, Map<Location, Shop>>> getShops() {
 
     return this.shops;
   }
@@ -508,24 +477,29 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return Shops
    */
   @Override
-  public @NotNull Map<Location, Shop> getShops(@NotNull final Chunk c) {
+  @NotNull
+  public Map<Location, Shop> getShops(@NotNull final Chunk c) {
 
     return getShops(c.getWorld().getName(), c.getX(), c.getZ());
   }
 
   @Override
-  public @NotNull Map<Location, Shop> getShops(@NotNull final String world, final int chunkX, final int chunkZ) {
+  @NotNull
+  public Map<Location, Shop> getShops(@NotNull final String world, final int chunkX, final int chunkZ) {
 
     final Map<ShopChunk, Map<Location, Shop>> inWorld = this.getShops(world);
     if(inWorld.isEmpty()) {
 
       return Collections.emptyMap();
     }
-    return inWorld.get(new SimpleShopChunk(world, chunkX, chunkZ));
+
+    final Map<Location, Shop> shops = inWorld.get(new SimpleShopChunk(world, chunkX, chunkZ));
+    return shops != null ? shops : Collections.emptyMap();
   }
 
   @Override
-  public @NotNull Map<Location, Shop> getShops(@NotNull final ShopChunk shopChunk) {
+  @NotNull
+  public Map<Location, Shop> getShops(@NotNull final ShopChunk shopChunk) {
 
     return getShops(shopChunk.getWorld(), shopChunk.getX(), shopChunk.getZ());
   }
@@ -538,13 +512,15 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return a map of Chunk - Shop
    */
   @Override
-  public @NotNull Map<ShopChunk, Map<Location, Shop>> getShops(@NotNull final String world) {
+  @NotNull
+  public Map<ShopChunk, Map<Location, Shop>> getShops(@NotNull final String world) {
 
-    if(!this.shops.containsKey(world)) {
+    final Map<ShopChunk, Map<Location, Shop>> shopsInWorld = this.shops.get(world);
+    if(shopsInWorld == null) {
       return Collections.emptyMap();
     }
 
-    return this.shops.get(world);
+    return shopsInWorld;
   }
 
   /**
@@ -555,28 +531,24 @@ public abstract class AbstractShopManager implements ShopManager {
    * @return The list have this world all shops
    */
   @Override
-  public @NotNull List<Shop> getShopsInWorld(@NotNull final World world) {
+  @NotNull
+  public List<Shop> getShopsInWorld(@NotNull final World world) {
 
-    final List<Shop> worldShops = new ArrayList<>();
-    for(final Shop shop : getAllShops()) {
-      final Location location = shop.getLocation();
-      if(location.isWorldLoaded() && Objects.equals(location.getWorld(), world)) {
-        worldShops.add(shop);
-      }
-    }
-    return worldShops;
+    return this.getShopsInWorld(world.getName());
   }
 
   @Override
-  public @NotNull List<Shop> getShopsInWorld(@NotNull final String worldName) {
+  @NotNull
+  public List<Shop> getShopsInWorld(@NotNull final String worldName) {
 
     final List<Shop> worldShops = new ArrayList<>();
-    for(final Shop shop : getAllShops()) {
-      final Location location = shop.getLocation();
-      if(location.isWorldLoaded() && com.ghostchu.quickshop.common.util.CommonUtil.strEquals(worldName, location.getWorld().getName())) {
-        worldShops.add(shop);
-      }
+
+    final Map<ShopChunk, Map<Location, Shop>> shopsInWorld = getShops(worldName);
+    for(final Map<Location, Shop> chunkEntry : shopsInWorld.values()) {
+
+        worldShops.addAll(chunkEntry.values());
     }
+
     return worldShops;
   }
 
@@ -589,63 +561,21 @@ public abstract class AbstractShopManager implements ShopManager {
     return plugin.getDatabaseHelper().queryInventoryCache(shop.getShopId());
   }
 
+  /**
+   * Retrieves the TradeService associated with the EconomyManager.
+   *
+   * @return A non-null instance of TradeService, which provides functionality for executing and
+   * previewing trade operations such as buying from and selling to shops.
+   */
+  @Override
+  @NotNull
+  public TradeService tradeService() {
 
-  static class TagParser {
-
-    private final List<String> tags;
-    private final ShopManager shopManager;
-    private final UUID tagger;
-    private final Map<String, List<Shop>> singleCaching = new HashMap<>();
-
-    public TagParser(final UUID tagger, final ShopManager shopManager, final List<String> tags) {
-
-      Util.ensureThread(true);
-      this.shopManager = shopManager;
-      this.tags = tags;
-      this.tagger = tagger;
-    }
-
-    public List<Shop> parseTags() {
-
-      final List<Shop> finalShop = new ArrayList<>();
-      for(final String tag : tags) {
-        final ParseResult result = parseSingleTag(tag);
-        if(result.getBehavior() == Behavior.INCLUDE) {
-          finalShop.addAll(result.getShops());
-        } else if(result.getBehavior() == Behavior.EXCLUDE) {
-          finalShop.removeAll(result.getShops());
-        }
-      }
-      return finalShop;
-    }
-
-    public ParseResult parseSingleTag(final String tag) throws IllegalArgumentException {
-
-      Util.ensureThread(true);
-      Behavior behavior = Behavior.INCLUDE;
-      if(tag.startsWith("-")) {
-        behavior = Behavior.EXCLUDE;
-      }
-      final String tagName = tag.substring(1);
-      if(tagName.isEmpty()) {
-        throw new IllegalArgumentException("Tag name can't be empty");
-      }
-      final List<Shop> shops = singleCaching.computeIfAbsent(tag, (t)->shopManager.queryTaggedShops(tagger, t).join());
-      return new ParseResult(behavior, shops);
-    }
-
-    enum Behavior {
-      INCLUDE,
-      EXCLUDE
-    }
-
-    @AllArgsConstructor
-    @Data
-    static class ParseResult {
-
-      private final Behavior behavior;
-      private final List<Shop> shops;
-    }
+    return tradeService;
   }
 
+  public ShopCache getShopCache() {
+
+    return this.shopCache;
+  }
 }

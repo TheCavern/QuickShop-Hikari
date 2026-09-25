@@ -14,7 +14,7 @@ import fr.xyness.SCS.API.Listeners.UnclaimEvent;
 import fr.xyness.SCS.API.Listeners.UnclaimallEvent;
 import fr.xyness.SCS.API.SimpleClaimSystemAPI;
 import fr.xyness.SCS.API.SimpleClaimSystemAPI_Provider;
-import fr.xyness.SCS.Claim;
+import fr.xyness.SCS.Types.Claim;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -159,7 +159,7 @@ public final class Main extends CompatibilityModule {
       return;
     }
 
-    final Location shopLoc = event.shop().get().getLocation();
+    final Location shopLoc = event.shop().get().bukkitLocation();
     if(shopLoc.getWorld() == null) {
       return;
     }

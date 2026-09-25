@@ -20,11 +20,6 @@ import com.ghostchu.quickshop.common.util.CommonUtil;
 import com.ghostchu.quickshop.compatibility.CompatibilityModule;
 import com.ghostchu.quickshop.compatibility.towny.command.NationCommand;
 import com.ghostchu.quickshop.compatibility.towny.command.TownCommand;
-import com.ghostchu.quickshop.compatibility.towny.compat.UuidConversion;
-import com.ghostchu.quickshop.compatibility.towny.compat.essentials.EssentialsConversion;
-import com.ghostchu.quickshop.compatibility.towny.compat.general.GeneralConversion;
-import com.ghostchu.quickshop.compatibility.towny.compat.gringotts.towny.GringottsTownyConversion;
-import com.ghostchu.quickshop.compatibility.towny.compat.tne.TNEConversion;
 import com.ghostchu.quickshop.obj.QUserImpl;
 import com.ghostchu.quickshop.util.Util;
 import com.ghostchu.quickshop.util.logger.Log;
@@ -44,7 +39,6 @@ import com.palmergames.bukkit.towny.object.Town;
 import com.palmergames.bukkit.towny.object.TownBlock;
 import com.palmergames.bukkit.towny.object.WorldCoord;
 import com.palmergames.bukkit.towny.utils.ShopPlotUtil;
-import lombok.Getter;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
@@ -58,9 +52,11 @@ import org.bukkit.event.Listener;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -68,15 +64,13 @@ import java.util.UUID;
 
 public final class Main extends CompatibilityModule implements Listener {
 
-  @Getter
   private QuickShopAPI api;
   private List<TownyFlags> createFlags;
   private List<TownyFlags> tradeFlags;
   private boolean whiteList;
-  @Getter
   private TownyMaterialPriceLimiter priceLimiter;
-  @Getter
-  private UuidConversion uuidConversion;
+
+  private static Main instance;
 
   private boolean isWorldIgnored(final World world) {
 
@@ -128,6 +122,8 @@ public final class Main extends CompatibilityModule implements Listener {
   @Override
   public void init() {
 
+    instance = this;
+
     performConfigurationUpgrade();
     api = QuickShopAPI.getInstance();
     createFlags = TownyFlags.deserialize(getConfig().getStringList("create"));
@@ -146,12 +142,6 @@ public final class Main extends CompatibilityModule implements Listener {
                                                 .description((locale)->api.getTextManager().of("addon.towny.commands.nation").forLocale(locale))
                                                 .executor(new NationCommand(this))
                                                 .build());
-    uuidConversion = switch(getConfig().getInt("uuid-conversion", 0)) {
-      case 1 -> new EssentialsConversion();
-      case 2 -> new GringottsTownyConversion();
-      case 3 -> new TNEConversion();
-      default -> new GeneralConversion();
-    };
     reflectChanges();
   }
 
@@ -260,6 +250,7 @@ public final class Main extends CompatibilityModule implements Listener {
   }
 
   public void purgeShops(@NotNull final WorldCoord worldCoord, @Nullable final UUID owner, @Nullable final UUID deleter, @NotNull final String reason, final boolean overrideOwner) {
+
     purgeShops(Set.of(worldCoord), owner, deleter, reason, overrideOwner);
   }
 
@@ -272,12 +263,28 @@ public final class Main extends CompatibilityModule implements Listener {
     Util.asyncThreadRun(()->{
       final QUser actor = QUserImpl.createFullFilled(CommonUtil.getNilUniqueId(), "Towny", false);
       //Getting all shop with world-chunk-shop mapping
-      for(final Shop shop : api.getShopManager().getAllShops()) {
-        if(!worldCoords.contains(WorldCoord.parseWorldCoord(shop.getLocation()))) {
-          continue;
+      final List<Shop> shops = new ArrayList<>();
+      if(WorldCoord.getCellSize() != 16) {
+
+        for(final Shop shop : api.getShopManager().getAllShops()) {
+          if(!worldCoords.contains(WorldCoord.parseWorldCoord(shop.bukkitLocation()))) {
+            continue;
+          }
+          shops.add(shop);
         }
+      } else {
+        // the size of a worldcoord is the same size as a chunk, we can use a faster way to retrieve all shops
+        for(final WorldCoord worldCoord : worldCoords) {
+          final Map<Location, Shop> shopsInChunk = api.getShopManager().getShops(worldCoord.getWorldName(), worldCoord.getX(), worldCoord.getZ());
+          if(!shopsInChunk.isEmpty()) {
+            shops.addAll(shopsInChunk.values());
+          }
+        }
+      }
+
+      for(final Shop shop : shops) {
         if(overrideOwner || owner != null && owner.equals(shop.getOwner().getUniqueId())) {
-          Util.regionThread(shop.getLocation(), ()->{
+          Util.regionThread(shop.bukkitLocation(), ()->{
             recordDeletion(actor, shop, reason);
             getApi().getShopManager().deleteShop(shop);
           });
@@ -349,11 +356,11 @@ public final class Main extends CompatibilityModule implements Listener {
   @EventHandler(ignoreCancelled = true)
   public void onTrading(final ShopPurchaseEvent event) {
 
-    if(isWorldIgnored(event.getShop().getLocation().getWorld())) {
+    if(isWorldIgnored(event.getShop().bukkitLocation().getWorld())) {
       return;
     }
     event.getPurchaser().getBukkitPlayer().ifPresent(player->{
-      final Optional<Component> component = checkFlags(player, event.getShop().getLocation(), this.tradeFlags);
+      final Optional<Component> component = checkFlags(player, event.getShop().bukkitLocation(), this.tradeFlags);
       component.ifPresent(value->event.setCancelled(true, value));
     });
   }
@@ -391,7 +398,7 @@ public final class Main extends CompatibilityModule implements Listener {
       return;
     }
 
-    final Location shopLoc = event.shop().get().getLocation();
+    final Location shopLoc = event.shop().get().bukkitLocation();
     if(isWorldIgnored(shopLoc.getWorld())) {
       return;
     }
@@ -507,7 +514,7 @@ public final class Main extends CompatibilityModule implements Listener {
       return;
     }
     // Modify tax account to town account if they aren't town shop or nation shop but inside town or nation
-    final Town town = TownyAPI.getInstance().getTown(shop.getLocation());
+    final Town town = TownyAPI.getInstance().getTown(shop.bukkitLocation());
     if(town != null) {
       UUID uuid = QuickShop.getInstance().getPlayerFinder().name2Uuid(town.getAccount().getName());
       if(uuid == null) {
@@ -535,5 +542,20 @@ public final class Main extends CompatibilityModule implements Listener {
     }
 
     return false;
+  }
+
+  public static Main getInstance() {
+
+    return instance;
+  }
+
+  public QuickShopAPI getApi() {
+
+    return this.api;
+  }
+
+  public TownyMaterialPriceLimiter getPriceLimiter() {
+
+    return this.priceLimiter;
   }
 }

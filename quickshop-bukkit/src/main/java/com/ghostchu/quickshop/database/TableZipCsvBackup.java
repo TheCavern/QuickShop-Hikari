@@ -7,7 +7,7 @@ import com.ghostchu.quickshop.util.logger.Log;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import org.jetbrains.annotations.NotNull;
-import org.relique.jdbc.csv.CsvDriver;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -168,7 +168,7 @@ public final class TableZipCsvBackup {
       for(final DataTables table : DataTables.values()) {
         Log.debug("Exporting table " + table.name());
 
-        final File tableCsv = new File(Util.getCacheFolder(), table.getName() + ".csv");
+        final File tableCsv = new File(Util.getCacheFolder(), table.logicalName() + ".csv");
         tableCsv.getParentFile().mkdirs();
         if(tableCsv.exists()) tableCsv.delete();
         tableCsv.deleteOnExit();
@@ -179,18 +179,18 @@ public final class TableZipCsvBackup {
 
           writeToCSV(rs, tableCsv);
 
-          schema = TableSchema.from(table.getName(), rs.getMetaData());
+          schema = TableSchema.from(table.logicalName(), rs.getMetaData());
 
           Log.debug("Exported table " + table.name() + " to " + tableCsv.getAbsolutePath());
         }
 
         Log.debug("Adding CSV for " + table.name() + " to zip file");
-        out.putNextEntry(new ZipEntry(table.getName() + ".csv"));
+        out.putNextEntry(new ZipEntry(table.logicalName() + ".csv"));
         Files.copy(tableCsv.toPath(), out);
         out.closeEntry();
 
         Log.debug("Adding schema for " + table.name() + " to zip file");
-        out.putNextEntry(new ZipEntry(table.getName() + ".schema.json"));
+        out.putNextEntry(new ZipEntry(table.logicalName() + ".schema.json"));
         final byte[] schemaBytes = GSON.toJson(schema).getBytes(StandardCharsets.UTF_8);
         out.write(schemaBytes);
         out.closeEntry();
@@ -215,7 +215,14 @@ public final class TableZipCsvBackup {
   public static void importFromCSV(@NotNull final File zipFile, @NotNull final DataTables table)
           throws SQLException, ClassNotFoundException, IOException {
 
-    final TableSchema schema = readSchemaFromZip(zipFile, table.getName());
+
+    String csvTableName = table.logicalName();
+    TableSchema schema = readSchemaFromZip(zipFile, table.logicalName());
+    if(schema == null) {
+      csvTableName = table.getName();
+      schema = readSchemaFromZip(zipFile, table.getName());
+    }
+
     if(schema == null) {
       throw new IllegalStateException("Missing schema sidecar for table " + table.getName()
                                       + " (expected " + table.getName() + ".schema.json in zip)");
@@ -223,8 +230,6 @@ public final class TableZipCsvBackup {
 
     Log.debug("Loading CsvDriver...");
     Class.forName("org.relique.jdbc.csv.CsvDriver");
-
-    final String csvTableName = table.getName();
 
     try(final Connection conn = DriverManager.getConnection("jdbc:relique:csv:zip:" + zipFile);
         final Statement stmt = conn.createStatement(ResultSet.TYPE_SCROLL_SENSITIVE, ResultSet.CONCUR_READ_ONLY);
@@ -262,8 +267,63 @@ public final class TableZipCsvBackup {
 
     try(final PrintStream stream = new PrintStream(csvFile)) {
       Log.debug("Writing to CSV file: " + csvFile.getAbsolutePath());
-      CsvDriver.writeToCsv(set, stream, true);
+      writeToCSV(set, stream);
     }
+  }
+
+  /**
+   * Writes a result set to CSV as-is.
+   * <p>
+   * Do not replace this with {@code CsvDriver#writeToCsv}: for any result set that is not one of
+   * csvjdbc's own, that method falls back to its hard-coded {@code UTC} default and re-formats
+   * every timestamp of the connection's own time zone into UTC, which silently shifts all date
+   * and time values (and makes them drift again on every export/import cycle).
+   */
+  public static void writeToCSV(@NotNull final ResultSet set, @NotNull final PrintStream stream) throws SQLException {
+
+    final ResultSetMetaData meta = set.getMetaData();
+    final int columnCount = meta.getColumnCount();
+    final StringBuilder line = new StringBuilder();
+
+    for(int i = 1; i <= columnCount; i++) {
+      if(i > 1) line.append(',');
+      line.append(escapeCsv(meta.getColumnLabel(i)));
+    }
+    stream.println(line);
+
+    while(set.next()) {
+      line.setLength(0);
+      for(int i = 1; i <= columnCount; i++) {
+        if(i > 1) line.append(',');
+        line.append(escapeCsv(readCsvValue(set, i, meta.getColumnType(i))));
+      }
+      stream.println(line);
+    }
+    stream.flush();
+  }
+
+  private static @Nullable String readCsvValue(@NotNull final ResultSet set, final int index, final int sqlType) throws SQLException {
+
+    final String raw = set.getString(index);
+    if(raw == null) {
+      return null;
+    }
+    if(sqlType == Types.BIT || sqlType == Types.BOOLEAN) {
+      // MySQL returns raw bytes for BIT columns, the importer expects true/false
+      return set.getBoolean(index)? "true" : "false";
+    }
+    return raw;
+  }
+
+  private static @NotNull String escapeCsv(@Nullable final String value) {
+
+    if(value == null || value.isEmpty()) {
+      return "";
+    }
+    if(value.indexOf(',') < 0 && value.indexOf('"') < 0 && value.indexOf('\n') < 0 && value.indexOf('\r') < 0) {
+      return value;
+    }
+    return '"' + value.replace("\"", "\"\"") + '"';
   }
 
   public static final class TableSchema {

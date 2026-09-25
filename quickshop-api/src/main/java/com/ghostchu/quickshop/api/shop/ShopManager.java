@@ -4,7 +4,9 @@ import com.ghostchu.quickshop.api.economy.EconomyProvider;
 import com.ghostchu.quickshop.api.inventory.InventoryWrapper;
 import com.ghostchu.quickshop.api.obj.QUser;
 import com.ghostchu.quickshop.api.shop.cache.ShopInventoryCountCache;
+import com.ghostchu.quickshop.api.shop.state.ShopState;
 import com.ghostchu.quickshop.api.shop.tax.TaxManager;
+import com.ghostchu.quickshop.api.shop.trading.TradeService;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -15,9 +17,11 @@ import org.bukkit.entity.Player;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -44,6 +48,15 @@ public interface ShopManager {
    * @return an instance of TaxManager that manages tax calculations and logic.
    */
   TaxManager taxManager();
+
+  /**
+   * Retrieves the TradeService associated with the EconomyManager.
+   *
+   * @return A non-null instance of TradeService, which provides functionality for executing
+   *         and previewing trade operations such as buying from and selling to shops.
+   */
+  @NotNull
+  TradeService tradeService();
 
   /**
    * Sets the shop layout provider to customize the layout of the shop.
@@ -126,6 +139,51 @@ public interface ShopManager {
   @NotNull IShopType shopTypeOrDefault(final String identifier);
 
   /**
+   * Retrieves a map of shop states where the keys are shop identifiers and the values are the corresponding shop states.
+   *
+   * @return a non-null map containing shop identifiers as keys and their corresponding {@link ShopState} objects as values.
+   */
+  @NotNull Map<String, ShopState> shopStates();
+
+  /**
+   * Adds a shop state to the collection by associating its identifier with the given ShopState instance.
+   *
+   * @param type the ShopState object to be added, which contains the identifier and related state information
+   */
+  default void addShopState(final ShopState type) {
+    shopStates().put(type.identifier().toLowerCase(Locale.ROOT), type);
+  }
+
+  /**
+   * Removes the shop state associated with the given identifier.
+   *
+   * @param identifier the unique identifier of the shop state to be removed
+   */
+  default void removeShopState(final String identifier) {
+    shopStates().remove(identifier);
+  }
+
+
+  /**
+   * Retrieves the shop state associated with the given identifier.
+   *
+   * @param identifier the unique identifier of the shop state to retrieve
+   * @return an {@code Optional} containing the {@code ShopState} if found, or an empty {@code Optional} if no match is found
+   */
+  default Optional<ShopState> shopState(final String identifier) {
+    return Optional.ofNullable(shopStates().get(identifier.toLowerCase(Locale.ROOT)));
+  }
+
+  /**
+   * Retrieves the ShopState associated with the specified identifier.
+   * If no ShopState is found for the identifier, a default ShopState is returned.
+   *
+   * @param identifier the unique identifier for the shop state to retrieve
+   * @return the ShopState associated with the identifier, or a default ShopState if not found
+   */
+  @NotNull ShopState shopStateOrDefault(final String identifier);
+
+  /**
    * Handle the player buying
    *
    * @param buyer          The player buying
@@ -174,7 +232,8 @@ public interface ShopManager {
           @NotNull Shop shop,
           int amount);
 
-  void bakeShopRuntimeRandomUniqueIdCache(@NotNull Shop shop);
+  @Deprecated(since = "6.3.0.2")
+  default void bakeShopRuntimeRandomUniqueIdCache(@NotNull Shop shop) {}
 
   /**
    * Removes all shops from memory and the world. Does not delete them from the database. Call this
@@ -217,13 +276,12 @@ public interface ShopManager {
   String format(double d, @NotNull Shop shop);
 
   /**
-   * Returns all shops in the whole database, include unloaded.
-   *
-   * <p>Make sure you have caching this, because this need a while to get all shops
+   * Returns all shops in the whole database, including ones in unloaded chunks.
    *
    * @return All shop in the database
    */
   @NotNull
+  @Unmodifiable
   List<Shop> getAllShops();
 
   /**
@@ -546,15 +604,15 @@ public interface ShopManager {
   BlockState makeShopSign(@NotNull Block container, @NotNull Block signBlock, @Nullable Material signMaterial);
 
   @NotNull
-  CompletableFuture<@NotNull List<Shop>> queryTaggedShops(@NotNull UUID tagger, @NotNull String tag);
+  CompletableFuture<List<Shop>> queryTaggedShops(@NotNull UUID tagger, @NotNull String tag);
 
-  CompletableFuture<@Nullable Integer> clearShopTags(@NotNull UUID tagger, @NotNull Shop shop);
+  CompletableFuture<Integer> clearShopTags(@NotNull UUID tagger, @NotNull Shop shop);
 
-  CompletableFuture<@Nullable Integer> clearTagFromShops(@NotNull UUID tagger, @NotNull String tag);
+  CompletableFuture<Integer> clearTagFromShops(@NotNull UUID tagger, @NotNull String tag);
 
-  CompletableFuture<@Nullable Integer> removeTag(@NotNull UUID tagger, @NotNull Shop shop, @NotNull String tag);
+  CompletableFuture<Integer> removeTag(@NotNull UUID tagger, @NotNull Shop shop, @NotNull String tag);
 
-  CompletableFuture<@Nullable Integer> tagShop(@NotNull UUID tagger, @NotNull Shop shop, @NotNull String tag);
+  CompletableFuture<Integer> tagShop(@NotNull UUID tagger, @NotNull Shop shop, @NotNull String tag);
 
   @NotNull
   List<String> listTags(@NotNull UUID tagger);
@@ -562,7 +620,7 @@ public interface ShopManager {
   void deleteShop(@NotNull Shop shop);
 
   @NotNull
-  CompletableFuture<@NotNull ShopInventoryCountCache> queryShopInventoryCacheInDatabase(@NotNull Shop shop);
+  CompletableFuture<ShopInventoryCountCache> queryShopInventoryCacheInDatabase(@NotNull Shop shop);
 
   /**
    * An getActions() alternative.

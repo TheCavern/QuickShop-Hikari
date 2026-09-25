@@ -18,6 +18,8 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Collections;
 import java.util.List;
 
+import static com.ghostchu.quickshop.util.Util.VANILLA_MAX_STACK_SIZE;
+
 public class SubCommand_Size implements CommandHandler<Player> {
 
   private final QuickShop plugin;
@@ -41,6 +43,11 @@ public class SubCommand_Size implements CommandHandler<Player> {
       plugin.text().of(sender, "not-a-integer", parser.getArgs().getFirst()).send();
       return;
     }
+
+    if(amount > VANILLA_MAX_STACK_SIZE) {
+      plugin.text().of(sender, "command.invalid-bulk-amount", amount).send();
+      return;
+    }
     final Shop shop = getLookingShop(sender);
     if(shop != null) {
       if(shop.playerAuthorize(sender.getUniqueId(), BuiltInShopPermission.SET_STACK_AMOUNT)
@@ -57,7 +64,7 @@ public class SubCommand_Size implements CommandHandler<Player> {
         final ItemStack pendingItemStack = shop.getItem().clone();
         pendingItemStack.setAmount(amount);
         final PriceLimiter limiter = plugin.getShopManager().getPriceLimiter();
-        final PriceLimiterCheckResult checkResult = limiter.check(sender, pendingItemStack, shop.getCurrency(), shop.getPrice());
+        final PriceLimiterCheckResult checkResult = limiter.check(sender, pendingItemStack, shop.getCurrency(), shop.getPrice(), shop.shopType());
         if(checkResult.getStatus() != PriceLimiterStatus.PASS) {
           plugin.text().of(sender, "restricted-prices", Util.getItemStackName(shop.getItem()),
                            Component.text(checkResult.getMin()),
